@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      target: production
+    image: gasalert-backend-prod
+    command: gunicorn core.wsgi:application --bind 0.0.0.0:8000
+    expose:
+      - "8000"
+    env_file:
+      - .env.prod
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings.production
+    networks:
+      - gasalert-net
+
+  nginx:
+    image: nginx:1.21-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx:/etc/nginx/conf.d
+      - ./staticfiles:/var/www/static
+      - ./media:/var/www/media
+    depends_on:
+      - web
+    networks:
+      - gasalert-net
+
+  db:
+    image: postgres:13
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data/
+    env_file:
+      - .env.prod
+    networks:
+      - gasalert-net
+
+  redis:
+    image: redis:6-alpine
+    volumes:
+      - redis_data_prod:/data
+    networks:
+      - gasalert-net
+
+  celery_worker:
+    build:
+      context: .
+      target: production
+    image: gasalert-backend-prod
+    command: celery -A core worker -l INFO
+    env_file:
+      - .env.prod
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings.production
+    networks:
+      - gasalert-net
+
+  celery_beat:
+    build:
+      context: .
+      target: production
+    image: gasalert-backend-prod
+    command: celery -A core beat -l INFO
+    env_file:
+      - .env.prod
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings.production
+    networks:
+      - gasalert-net
+
+networks:
+  gasalert-net:
+    driver: bridge
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:
