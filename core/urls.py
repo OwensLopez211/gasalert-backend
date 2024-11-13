@@ -16,6 +16,7 @@ urlpatterns = [
     # Aqui van las urls de las respectivas APIS
     path('api/', include('apps.users.urls')),         # URLs de users
     path('api/', include('apps.stations.urls')),      # URLs de stations
+    path('api/tanks/', include('apps.tanks.urls')),   # URLs de tanks
 ]
 
 if settings.DEBUG:

@@ -33,6 +33,7 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     'apps.users.apps.UsersConfig',
     'apps.stations.apps.StationsConfig',
+    'apps.tanks.apps.TanksConfig',  # Agregar esta línea
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
