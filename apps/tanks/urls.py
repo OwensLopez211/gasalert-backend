@@ -5,7 +5,7 @@ from .views import TipoCombustibleViewSet, TanqueViewSet, LecturaViewSet, Dashbo
 # Crear el router y registrar los viewsets
 router = DefaultRouter()
 router.register(r'tipos-combustible', TipoCombustibleViewSet)
-router.register(r'tanques', TanqueViewSet, basename='tanque')
+router.register(r'', TanqueViewSet, basename='tanque')
 router.register(r'lecturas', LecturaViewSet, basename='lectura')
 router.register(r'dashboard', DashboardViewSet, basename='dashboard')
 

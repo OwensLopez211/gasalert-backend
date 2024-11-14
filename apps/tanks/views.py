@@ -1,5 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import api_view,permission_classes
 from django.db.models import Sum, Count, Q
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -7,7 +8,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import timedelta
 from datetime import datetime
-import pytz
+from django.utils.timezone import now
+from django.db.models.functions import TruncDay, TruncWeek
 from .models import TipoCombustible, Tanque, Lectura
 from .serializers import (
     TipoCombustibleSerializer,
@@ -22,7 +24,7 @@ class TipoCombustibleViewSet(viewsets.ModelViewSet):
     serializer_class = TipoCombustibleSerializer
     permission_classes = [IsAuthenticated]
 
-class TanqueViewSet(viewsets.ModelViewSet):
+""" class TanqueViewSet(viewsets.ModelViewSet):
     serializer_class = TanqueSerializer
     permission_classes = [IsAuthenticated]
     
@@ -34,7 +36,28 @@ class TanqueViewSet(viewsets.ModelViewSet):
                 activo=True
             ).values_list('estacion_id', flat=True)
             queryset = queryset.filter(estacion_id__in=estaciones_permitidas)
+        return queryset """
+# views.py en tanks
+class TanqueViewSet(viewsets.ModelViewSet):
+    serializer_class = TanqueSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        queryset = Tanque.objects.all()
+        estacion_id = self.request.query_params.get('estacion_id')
+        
+        if estacion_id:
+            queryset = queryset.filter(estacion_id=estacion_id)
+        
+        if not self.request.user.is_superuser:
+            estaciones_permitidas = self.request.user.roles_estaciones.filter(
+                activo=True
+            ).values_list('estacion_id', flat=True)
+            queryset = queryset.filter(estacion_id__in=estaciones_permitidas)
+            
         return queryset
+
+
 
     @action(detail=True, methods=['post'])
     def registrar_lectura(self, request, pk=None):
@@ -195,32 +218,47 @@ class DashboardViewSet(viewsets.ViewSet):
         serializer = DashboardTanqueSerializer(tanques, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'])
-    def historico_niveles(self, request):
-        """Obtiene el histórico de niveles para un tanque específico"""
-        tanque_id = request.query_params.get('tanque_id')
-        if not tanque_id:
-            return Response(
-                {"error": "Debe especificar un tanque"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+from collections import defaultdict
 
-        tanque = self._get_tanque(tanque_id, request.user)
-        dias = int(request.query_params.get('dias', 7))
-        fecha_inicio = timezone.now() - timedelta(days=dias)
-        
-        lecturas = tanque.lecturas.filter(
-            fecha__gte=fecha_inicio
-        ).order_by('fecha')
-        
-        data = [{
-            'fecha': lectura.fecha,
-            'nivel': lectura.nivel,
-            'volumen': lectura.volumen,
-            'temperatura': lectura.temperatura
-        } for lectura in lecturas]
-        
-        return Response(data)
+@action(detail=False, methods=['get'])
+def historico_niveles(self, request):
+    """Obtiene el histórico de niveles para un tanque específico"""
+    tanque_id = request.query_params.get('tanque_id')
+    if not tanque_id:
+        return Response(
+            {"error": "Debe especificar un tanque"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    tanque = self._get_tanque(tanque_id, request.user)
+    dias = int(request.query_params.get('dias', 7))
+    fecha_inicio = timezone.now() - timedelta(days=dias)
+
+    # Obtener lecturas desde la fecha de inicio hasta hoy
+    lecturas = tanque.lecturas.filter(
+        fecha__gte=fecha_inicio
+    ).order_by('fecha')
+
+    # Crear un diccionario con las fechas de los últimos 7 días y valores iniciales en 0
+    niveles_por_dia = defaultdict(lambda: 0)
+    fechas = [fecha_inicio + timedelta(days=i) for i in range(dias)]
+
+    # Poner valores de las lecturas en el diccionario
+    for lectura in lecturas:
+        fecha = lectura.fecha.date()  # Extraer solo la parte de fecha
+        niveles_por_dia[fecha] = lectura.nivel
+
+    # Crear una lista de datos que asegure todos los días
+    data = [
+        {
+            'fecha': fecha,
+            'nivel': niveles_por_dia[fecha.date()],
+        }
+        for fecha in fechas
+    ]
+
+    return Response(data)
+
 
     @action(detail=False, methods=['get'])
     def consumo_diario(self, request):
@@ -257,3 +295,101 @@ class DashboardViewSet(viewsets.ViewSet):
                     })
         
         return Response(consumos)
+
+    @action(detail=False, methods=['get'])
+    def consumption(self, request):
+        """
+        Endpoint para obtener estadísticas de consumo diario y semanal
+        """
+        estacion_id = request.query_params.get('estacion_id')
+        if not estacion_id:
+            return Response(
+                {"error": "Debe especificar una estación"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Obtener fecha inicial para los cálculos
+        end_date = timezone.now()
+        daily_start = end_date - timedelta(days=7)
+        weekly_start = end_date - timedelta(days=120)  # 4 meses aprox.
+
+        # Filtrar tanques por estación y permisos
+        base_query = Q(estacion_id=estacion_id)
+        if not request.user.is_superuser:
+            estaciones_permitidas = self._get_user_estaciones(request.user)
+            if estaciones_permitidas is not None:
+                base_query &= Q(estacion_id__in=estaciones_permitidas)
+
+        tanques = Tanque.objects.filter(base_query)
+        
+        # Calcular consumo diario
+        daily_consumption = []
+        daily_labels = []
+        daily_total = 0
+
+        for tanque in tanques:
+            lecturas = tanque.lecturas.filter(
+                fecha__gte=daily_start
+            ).order_by('fecha')
+            
+            lecturas_list = list(lecturas)
+            for i in range(1, len(lecturas_list)):
+                lectura_actual = lecturas_list[i]
+                lectura_anterior = lecturas_list[i-1]
+                
+                if lectura_actual.fecha.date() == lectura_anterior.fecha.date():
+                    consumo = max(0, lectura_anterior.volumen - lectura_actual.volumen)
+                    if consumo > 0:
+                        fecha = lectura_actual.fecha.date()
+                        if fecha not in daily_labels:
+                            daily_labels.append(fecha)
+                            daily_consumption.append(consumo)
+                        else:
+                            idx = daily_labels.index(fecha)
+                            daily_consumption[idx] += consumo
+                        daily_total += consumo
+
+        # Calcular consumo semanal
+        weekly_consumption = []
+        weekly_labels = []
+        weekly_total = 0
+
+        for tanque in tanques:
+            lecturas = tanque.lecturas.filter(
+                fecha__gte=weekly_start
+            ).annotate(
+                week=TruncWeek('fecha')
+            ).values('week').annotate(
+                total_consumo=Sum('volumen')
+            ).order_by('week')
+            
+            for i in range(1, len(lecturas)):
+                consumo = max(0, lecturas[i-1]['total_consumo'] - lecturas[i]['total_consumo'])
+                if consumo > 0:
+                    semana = lecturas[i]['week']
+                    if semana not in weekly_labels:
+                        weekly_labels.append(semana)
+                        weekly_consumption.append(consumo)
+                    else:
+                        idx = weekly_labels.index(semana)
+                        weekly_consumption[idx] += consumo
+                    weekly_total += consumo
+
+        # Formatear fechas para las etiquetas
+        formatted_daily_labels = [d.strftime('%b %d') for d in daily_labels]
+        formatted_weekly_labels = [w.strftime('%b') for w in weekly_labels]
+
+        data = {
+            'daily': {
+                'labels': formatted_daily_labels,
+                'values': daily_consumption,
+                'total': daily_total
+            },
+            'weekly': {
+                'labels': formatted_weekly_labels,
+                'values': weekly_consumption,
+                'total': weekly_total
+            }
+        }
+
+        return Response(data)
