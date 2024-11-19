@@ -14,6 +14,7 @@ class TipoCombustible(models.Model):
         db_table = 'tipos_combustible'
         verbose_name = 'Tipo de Combustible'
         verbose_name_plural = 'Tipos de Combustible'
+        app_label = 'tanks'  # Asegúrate de que el nombre coincida con el de tu app
         ordering = ['tipo']
 
     def __str__(self):
@@ -46,6 +47,7 @@ class Tanque(models.Model):
         verbose_name = 'Tanque'
         verbose_name_plural = 'Tanques'
         ordering = ['estacion', 'nombre']
+        app_label = 'tanks'  # Asegúrate de que el nombre coincida con el de tu app
         unique_together = ['nombre', 'estacion']
 
     def __str__(self):
@@ -81,6 +83,7 @@ class Lectura(models.Model):
         db_table = 'lectura'
         verbose_name = 'Lectura'
         verbose_name_plural = 'Lecturas'
+        app_label = 'tanks'  # Asegúrate de que el nombre coincida con el de tu app
         ordering = ['-fecha']
 
     def __str__(self):
@@ -91,67 +94,3 @@ class Lectura(models.Model):
             self.fecha = timezone.now()
         super().save(*args, **kwargs)
 
-class Umbral(models.Model):
-    """Modelo para los umbrales de alerta de los tanques"""
-    tanque = models.ForeignKey(
-        Tanque,
-        on_delete=models.CASCADE,
-        related_name='umbrales'
-    )
-    umbral_maximo = models.FloatField(
-        validators=[MinValueValidator(0.0), MaxValueValidator(100.0)],
-        help_text="Umbral máximo en porcentaje (0-100)"
-    )
-    umbral_minimo = models.FloatField(
-        validators=[MinValueValidator(0.0), MaxValueValidator(100.0)],
-        help_text="Umbral mínimo en porcentaje (0-100)"
-    )
-    modificado_en = models.DateTimeField(auto_now=True)
-    modificado_por = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name='umbrales_modificados'
-    )
-
-    class Meta:
-        db_table = 'umbral'
-        verbose_name = 'Umbral'
-        verbose_name_plural = 'Umbrales'
-        ordering = ['-modificado_en']
-        get_latest_by = 'modificado_en'
-
-    def clean(self):
-        from django.core.exceptions import ValidationError
-        if self.umbral_minimo >= self.umbral_maximo:
-            raise ValidationError({
-                'umbral_minimo': 'El umbral mínimo debe ser menor que el máximo',
-                'umbral_maximo': 'El umbral máximo debe ser mayor que el mínimo'
-            })
-
-    def __str__(self):
-        return f"{self.tanque.nombre} - Min: {self.umbral_minimo}% Max: {self.umbral_maximo}%"
-
-class HistorialUmbrales(models.Model):
-    """Modelo para el historial de cambios en los umbrales"""
-    tanque = models.ForeignKey(
-        Tanque,
-        on_delete=models.CASCADE,
-        related_name='historial_umbrales'
-    )
-    umbral_anterior = models.FloatField()
-    umbral_nuevo = models.FloatField()
-    fecha_modificacion = models.DateTimeField(auto_now_add=True)
-    modificado_por = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name='historial_umbrales_modificados'
-    )
-
-    class Meta:
-        db_table = 'historial_umbrales'
-        verbose_name = 'Historial de Umbral'
-        verbose_name_plural = 'Historial de Umbrales'
-        ordering = ['-fecha_modificacion']
-
-    def __str__(self):
-        return f"{self.tanque.nombre} - {self.fecha_modificacion}"

@@ -1,7 +1,6 @@
 # apps/tanks/admin.py
 from django.contrib import admin
-from .models import TipoCombustible, Tanque, Lectura, Umbral
-
+from .models import TipoCombustible, Tanque, Lectura
 @admin.register(TipoCombustible)
 class TipoCombustibleAdmin(admin.ModelAdmin):
     list_display = ('tipo', 'descripcion', 'activo')
@@ -21,10 +20,3 @@ class LecturaAdmin(admin.ModelAdmin):
     list_filter = ('tanque__tipo_combustible', 'tanque__estacion')
     search_fields = ('tanque__nombre',)
     date_hierarchy = 'fecha'
-
-@admin.register(Umbral)
-class UmbralAdmin(admin.ModelAdmin):
-    list_display = ('tanque', 'umbral_maximo', 'umbral_minimo', 'modificado_en', 'modificado_por')
-    list_filter = ('tanque__tipo_combustible', 'tanque__estacion')
-    search_fields = ('tanque__nombre',)
-    date_hierarchy = 'modificado_en'

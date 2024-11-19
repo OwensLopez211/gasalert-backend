@@ -1,14 +1,13 @@
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view,permission_classes
-from django.db.models import Sum, Count, Q
 from rest_framework.decorators import action
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from django.db.models import Sum, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from datetime import timedelta
-from datetime import datetime
-from django.utils.timezone import now
+from datetime import timedelta, datetime
+from collections import defaultdict
 from django.db.models.functions import TruncDay, TruncWeek
 from .models import TipoCombustible, Tanque, Lectura
 from .serializers import (
@@ -18,26 +17,19 @@ from .serializers import (
     DashboardTanqueSerializer,
     DashboardEstacionSerializer
 )
+import redis
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
+# Initialize Redis and channel layer
+r = redis.StrictRedis(host='localhost', port=6379, db=1)
+channel_layer = get_channel_layer()
 
 class TipoCombustibleViewSet(viewsets.ModelViewSet):
     queryset = TipoCombustible.objects.all()
     serializer_class = TipoCombustibleSerializer
     permission_classes = [IsAuthenticated]
 
-""" class TanqueViewSet(viewsets.ModelViewSet):
-    serializer_class = TanqueSerializer
-    permission_classes = [IsAuthenticated]
-    
-    def get_queryset(self):
-        queryset = Tanque.objects.all()
-        if not self.request.user.is_superuser:
-            # Filtrar por estaciones a las que tiene acceso el usuario
-            estaciones_permitidas = self.request.user.roles_estaciones.filter(
-                activo=True
-            ).values_list('estacion_id', flat=True)
-            queryset = queryset.filter(estacion_id__in=estaciones_permitidas)
-        return queryset """
-# views.py en tanks
 class TanqueViewSet(viewsets.ModelViewSet):
     serializer_class = TanqueSerializer
     permission_classes = [IsAuthenticated]
@@ -57,26 +49,34 @@ class TanqueViewSet(viewsets.ModelViewSet):
             
         return queryset
 
-
-
     @action(detail=True, methods=['post'])
     def registrar_lectura(self, request, pk=None):
         tanque = self.get_object()
-        serializer = LecturaSerializer(data={
-            **request.data,
-            'tanque': tanque.id
-        })
+        volumen = request.data.get("volumen")
         
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if volumen is None:
+            return Response({"error": "Volumen no proporcionado."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Store volume in Redis with a timestamp key
+        timestamp = datetime.now().isoformat()
+        r.set(f"tank_data:{timestamp}", volumen)
+
+        # Send the latest reading to WebSocket for real-time frontend update
+        async_to_sync(channel_layer.group_send)(
+            "tank_updates",
+            {
+                "type": "send_tank_update",
+                "data": {"ultima_lectura": volumen}
+            }
+        )
+        
+        return Response({"message": "Lectura registrada en Redis y notificada al WebSocket."})
 
     @action(detail=True, methods=['get'])
     def lecturas(self, request, pk=None):
         tanque = self.get_object()
         dias = int(request.query_params.get('dias', 7))
-        fecha_inicio = timezone.now() - timezone.timedelta(days=dias)
+        fecha_inicio = timezone.now() - timedelta(days=dias)
         
         lecturas = tanque.lecturas.filter(
             fecha__gte=fecha_inicio
@@ -218,46 +218,46 @@ class DashboardViewSet(viewsets.ViewSet):
         serializer = DashboardTanqueSerializer(tanques, many=True)
         return Response(serializer.data)
 
-from collections import defaultdict
 
-@action(detail=False, methods=['get'])
-def historico_niveles(self, request):
-    """Obtiene el histórico de niveles para un tanque específico"""
-    tanque_id = request.query_params.get('tanque_id')
-    if not tanque_id:
-        return Response(
-            {"error": "Debe especificar un tanque"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
 
-    tanque = self._get_tanque(tanque_id, request.user)
-    dias = int(request.query_params.get('dias', 7))
-    fecha_inicio = timezone.now() - timedelta(days=dias)
+    @action(detail=False, methods=['get'])
+    def historico_niveles(self, request):
+        """Obtiene el histórico de niveles para un tanque específico"""
+        tanque_id = request.query_params.get('tanque_id')
+        if not tanque_id:
+            return Response(
+                {"error": "Debe especificar un tanque"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-    # Obtener lecturas desde la fecha de inicio hasta hoy
-    lecturas = tanque.lecturas.filter(
-        fecha__gte=fecha_inicio
-    ).order_by('fecha')
+        tanque = self._get_tanque(tanque_id, request.user)
+        dias = int(request.query_params.get('dias', 7))
+        fecha_inicio = timezone.now() - timedelta(days=dias)
 
-    # Crear un diccionario con las fechas de los últimos 7 días y valores iniciales en 0
-    niveles_por_dia = defaultdict(lambda: 0)
-    fechas = [fecha_inicio + timedelta(days=i) for i in range(dias)]
+        # Obtener lecturas desde la fecha de inicio hasta hoy
+        lecturas = tanque.lecturas.filter(
+            fecha__gte=fecha_inicio
+        ).order_by('fecha')
 
-    # Poner valores de las lecturas en el diccionario
-    for lectura in lecturas:
-        fecha = lectura.fecha.date()  # Extraer solo la parte de fecha
-        niveles_por_dia[fecha] = lectura.nivel
+        # Crear un diccionario con las fechas de los últimos 7 días y valores iniciales en 0
+        niveles_por_dia = defaultdict(lambda: 0)
+        fechas = [fecha_inicio + timedelta(days=i) for i in range(dias)]
 
-    # Crear una lista de datos que asegure todos los días
-    data = [
-        {
-            'fecha': fecha,
-            'nivel': niveles_por_dia[fecha.date()],
-        }
-        for fecha in fechas
-    ]
+        # Poner valores de las lecturas en el diccionario
+        for lectura in lecturas:
+            fecha = lectura.fecha.date()  # Extraer solo la parte de fecha
+            niveles_por_dia[fecha] = lectura.nivel
 
-    return Response(data)
+        # Crear una lista de datos que asegure todos los días
+        data = [
+            {
+                'fecha': fecha,
+                'nivel': niveles_por_dia[fecha.date()],
+            }
+            for fecha in fechas
+        ]
+
+        return Response(data)
 
 
     @action(detail=False, methods=['get'])
@@ -393,3 +393,21 @@ def historico_niveles(self, request):
         }
 
         return Response(data)
+    
+@api_view(['POST'])
+def sensor_reading(request):
+    tank_id = request.data.get('tank_id')
+    reading = request.data.get('reading')
+    
+    if tank_id and reading:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"tank_{tank_id}",
+            {
+                "type": "tank_update",
+                "tank_id": tank_id,
+                "reading": reading
+            }
+        )
+        return Response({"status": "ok"})
+    return Response({"error": "Invalid data"}, status=400)

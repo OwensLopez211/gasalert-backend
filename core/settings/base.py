@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 SECRET_KEY = config('DJANGO_SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
-
+ASGI_APPLICATION = 'core.asgi.application'
 ALLOWED_HOSTS = ['*']
 
 # Application definition
@@ -28,12 +28,16 @@ THIRD_PARTY_APPS = [
     'corsheaders',
     'drf_spectacular',
     'debug_toolbar',
+    'channels',
+    'django_extensions',
+    "django_celery_beat",
 ]
 
 LOCAL_APPS = [
     'apps.users.apps.UsersConfig',
     'apps.stations.apps.StationsConfig',
-    'apps.tanks.apps.TanksConfig',  # Agregar esta línea
+    'apps.tanks.apps.TanksConfig',
+    'apps.alerts.apps.AlertsConfig',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -80,6 +84,55 @@ TEMPLATES = [
         },
     },
 ]
+
+# Add these configurations
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+
+
+# Configuración de Celery
+CELERY_BEAT_SCHEDULE = {
+    'calcular-promedios': {
+        'task': 'apps.tanks.tasks.calcular_promedios',
+        'schedule': timedelta(minutes=1),
+    },
+    'limpiar-lecturas': {
+        'task': 'apps.tanks.tasks.limpiar_lecturas_antiguas',
+        'schedule': timedelta(minutes=1),
+    },
+    'limpiar-promedios': {
+        'task': 'apps.tanks.tasks.limpiar_promedios_antiguos',
+        'schedule': timedelta(minutes=1),
+    },
+    'procesar-notificaciones': {
+        'task': 'apps.alerts.tasks.procesar_notificaciones',
+        'schedule': 30.0,  # cada 30 segundos
+    },
+    'limpiar-alertas-antiguas': {
+        'task': 'apps.alerts.tasks.limpiar_alertas_antiguas',
+        'schedule': timedelta(days=1),  # una vez al día
+    },
+}
+
+CELERY_TIMEZONE = 'America/Santiago'
+
+# Configuración de sesiones
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+SESSION_COOKIE_AGE = 86400  # 24 horas en segundos
+
+# Configuración de canales
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
+
+
+
+
 
 WSGI_APPLICATION = 'core.wsgi.application'
 
@@ -143,6 +196,7 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
+
 LANGUAGE_CODE = 'es-cl'  # Español de Chile
 TIME_ZONE = 'America/Santiago'  # Zona horaria de Chile
 USE_I18N = True
@@ -201,3 +255,5 @@ LOGGING = {
         },
     },
 }
+
+USE_TZ = False

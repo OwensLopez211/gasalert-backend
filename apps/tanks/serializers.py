@@ -40,69 +40,50 @@ class TanqueSerializer(serializers.ModelSerializer):
             }
         return None
 
-    def validate_nombre(self, value):
-        """Validar que el nombre no esté duplicado en la misma estación"""
-        estacion_id = self.initial_data.get('estacion')
-        if self.instance is None:  # Solo para creación
-            if Tanque.objects.filter(
-                nombre__iexact=value,
-                estacion_id=estacion_id
-            ).exists():
-                raise serializers.ValidationError(
-                    "Ya existe un tanque con este nombre en esta estación"
-                )
-        return value
-
 class DashboardTanqueSerializer(serializers.ModelSerializer):
     ultima_lectura = serializers.SerializerMethodField()
-    promedio_24h = serializers.SerializerMethodField()
-    min_24h = serializers.SerializerMethodField()
-    max_24h = serializers.SerializerMethodField()
+    estadisticas_24h = serializers.SerializerMethodField()
     tendencia = serializers.SerializerMethodField()
     estado = serializers.SerializerMethodField()
-    porcentaje_capacidad = serializers.SerializerMethodField()
     
     class Meta:
         model = Tanque
         fields = [
             'id', 'nombre', 'tipo_combustible', 'capacidad_total',
-            'ultima_lectura', 'promedio_24h', 'min_24h', 'max_24h',
-            'tendencia', 'estado', 'porcentaje_capacidad'
+            'ultima_lectura', 'estadisticas_24h', 'tendencia', 'estado'
         ]
 
     def get_ultima_lectura(self, obj):
         ultima = obj.lecturas.first()
-        if ultima:
-            return {
-                'nivel': ultima.nivel,
-                'volumen': ultima.volumen,
-                'fecha': ultima.fecha,
-                'temperatura': ultima.temperatura
-            }
-        return None
+        return LecturaSerializer(ultima).data if ultima else None
 
-    def get_promedio_24h(self, obj):
-        return self._get_estadisticas_24h(obj).get('promedio', None)
-
-    def get_min_24h(self, obj):
-        return self._get_estadisticas_24h(obj).get('minimo', None)
-
-    def get_max_24h(self, obj):
-        return self._get_estadisticas_24h(obj).get('maximo', None)
+    def get_estadisticas_24h(self, obj):
+        fecha_24h = timezone.now() - timedelta(hours=24)
+        lecturas = obj.lecturas.filter(fecha__gte=fecha_24h)
+        
+        if not lecturas.exists():
+            return None
+            
+        stats = {
+            'promedio_nivel': lecturas.aggregate(Avg('nivel'))['nivel__avg'],
+            'min_nivel': lecturas.aggregate(Min('nivel'))['nivel__min'],
+            'max_nivel': lecturas.aggregate(Max('nivel'))['nivel__max'],
+            'promedio_volumen': lecturas.aggregate(Avg('volumen'))['volumen__avg']
+        }
+        
+        return {k: round(v, 2) if v is not None else None for k, v in stats.items()}
 
     def get_tendencia(self, obj):
-        """Calcula la tendencia basada en las últimas lecturas"""
-        ultimas_lecturas = obj.lecturas.order_by('-fecha')[:2]
-        if len(ultimas_lecturas) < 2:
+        lecturas = obj.lecturas.order_by('-fecha')[:2]
+        if len(lecturas) < 2:
             return 'estable'
         
-        diferencia = ultimas_lecturas[0].nivel - ultimas_lecturas[1].nivel
-        if abs(diferencia) < 1:  # Menos de 1% de cambio
+        diferencia = lecturas[0].nivel - lecturas[1].nivel
+        if abs(diferencia) < 1:
             return 'estable'
         return 'subiendo' if diferencia > 0 else 'bajando'
 
     def get_estado(self, obj):
-        """Determina el estado del tanque basado en umbrales"""
         ultima = obj.lecturas.first()
         if not ultima:
             return 'sin_datos'
@@ -116,33 +97,8 @@ class DashboardTanqueSerializer(serializers.ModelSerializer):
         elif ultima.nivel <= umbral.umbral_minimo:
             return 'bajo'
         return 'normal'
-
-    def get_porcentaje_capacidad(self, obj):
-        """Calcula el porcentaje de capacidad utilizada"""
-        ultima = obj.lecturas.first()
-        if not ultima or not obj.capacidad_total:
-            return 0
-        return (ultima.volumen / obj.capacidad_total) * 100
-
-    def _get_estadisticas_24h(self, obj):
-        """Método auxiliar para calcular estadísticas de las últimas 24 horas"""
-        fecha_24h = timezone.now() - timedelta(hours=24)
-        lecturas_24h = obj.lecturas.filter(fecha__gte=fecha_24h)
-        
-        stats = lecturas_24h.aggregate(
-            promedio=Avg('nivel'),
-            minimo=Min('nivel'),
-            maximo=Max('nivel')
-        )
-        
-        return {
-            'promedio': round(stats['promedio'], 2) if stats['promedio'] else None,
-            'minimo': stats['minimo'],
-            'maximo': stats['maximo']
-        }
-
+    
 class DashboardEstacionSerializer(serializers.Serializer):
-    """Serializer para estadísticas generales de la estación"""
     total_tanques = serializers.IntegerField()
     tanques_operativos = serializers.IntegerField()
     tanques_criticos = serializers.IntegerField()
@@ -150,3 +106,15 @@ class DashboardEstacionSerializer(serializers.Serializer):
     capacidad_total = serializers.FloatField()
     porcentaje_capacidad_total = serializers.FloatField()
     alertas_activas = serializers.IntegerField()
+
+    def get_alertas_activas(self, obj):
+        tanques = obj['tanques']
+        alertas = 0
+        for tanque in tanques:
+            ultima_lectura = tanque.lecturas.first()
+            if ultima_lectura and (
+                ultima_lectura.nivel <= tanque.umbral_minimo or
+                ultima_lectura.nivel >= tanque.umbral_maximo
+            ):
+                alertas += 1
+        return alertas
