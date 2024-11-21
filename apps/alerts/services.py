@@ -1,168 +1,143 @@
-import logging
-from django.db import transaction
-from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings
+from django.utils import timezone
+from django.db import transaction
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-from .models import ConfiguracionUmbrales, Alerta, Notificacion
+import logging
+from .models import Alerta, Notificacion
 
 logger = logging.getLogger(__name__)
 
-class AlertaService:
-    @staticmethod
-    def procesar_lectura(lectura):
+class AlertaNotificationService:
+    def __init__(self):
+        self.channel_layer = get_channel_layer()
+
+    def send_notifications(self, alerta):
         """
-        Procesa una lectura y genera alertas si es necesario
+        Método principal para enviar todas las notificaciones
         """
         try:
             with transaction.atomic():
-                tanque = lectura.tanque
-                umbrales = ConfiguracionUmbrales.objects.filter(
-                    tanque=tanque,
-                    activo=True
-                ).select_related('tanque')
-
-                for umbral in umbrales:
-                    if AlertaService._debe_generar_alerta(lectura.nivel, umbral):
-                        alerta = AlertaService._crear_alerta(lectura, umbral)
-                        if alerta:
-                            AlertaService._generar_notificaciones(alerta)
-
+                # Obtener destinatarios
+                destinatarios = self._get_alert_recipients(alerta)
+                
+                # Enviar notificaciones
+                self._send_email_notification(alerta, destinatarios)
+                self._send_websocket_notification(alerta)
+                self._create_notification_records(alerta, destinatarios)
+                
+                # Actualizar estado de la alerta
+                alerta.estado = 'NOTIFICADA'
+                alerta.save()
+                
+                logger.info(f"Notificaciones enviadas exitosamente para alerta {alerta.id}")
+                
         except Exception as e:
-            logger.error(f"Error procesando lectura {lectura.id}: {str(e)}")
+            logger.error(f"Error enviando notificaciones para alerta {alerta.id}: {str(e)}")
             raise
 
-    @staticmethod
-    def _debe_generar_alerta(nivel, umbral):
-        """Determina si se debe generar una alerta basada en el umbral"""
-        if umbral.tipo in ['CRITICO', 'BAJO']:
-            return nivel <= umbral.valor
-        elif umbral.tipo in ['ALTO', 'LIMITE']:
-            return nivel >= umbral.valor
-        return False
-
-    @staticmethod
-    def _crear_alerta(lectura, umbral):
-        """
-        Crea una nueva alerta si no existe una activa para el mismo umbral
-        """
-        # Verificar si ya existe una alerta activa para este umbral
-        alerta_existente = Alerta.objects.filter(
-            tanque=lectura.tanque,
-            configuracion_umbral=umbral,
-            estado__in=['ACTIVA', 'NOTIFICADA']
-        ).first()
-
-        if not alerta_existente:
-            return Alerta.objects.create(
-                tanque=lectura.tanque,
-                configuracion_umbral=umbral,
-                nivel_detectado=lectura.nivel
-            )
-        return None
-
-    @staticmethod
-    def _generar_notificaciones(alerta):
-        """Genera las notificaciones para una alerta"""
-        # Obtener usuarios a notificar (administradores y supervisores de la estación)
-        usuarios = AlertaService._obtener_usuarios_notificacion(alerta.tanque)
-
-        for usuario in usuarios:
-            # Notificación por email
-            Notificacion.objects.create(
-                alerta=alerta,
-                tipo='EMAIL',
-                destinatario=usuario,
-                estado='PENDIENTE'
-            )
-
-            # Notificación en plataforma
-            Notificacion.objects.create(
-                alerta=alerta,
-                tipo='PLATFORM',
-                destinatario=usuario,
-                estado='PENDIENTE'
-            )
-
-    @staticmethod
-    def _obtener_usuarios_notificacion(tanque):
-        """Obtiene los usuarios que deben ser notificados de una alerta"""
-        from apps.stations.models import EstacionUsuarioRol
-        return tanque.estacion.usuarios_roles.filter(
+    def _get_alert_recipients(self, alerta):
+        """Obtiene los usuarios que deben recibir la notificación"""
+        return alerta.tanque.estacion.usuarios_roles.filter(
             activo=True,
             rol__in=['admin', 'supervisor']
-        ).values_list('usuario', flat=True)
+        ).select_related('usuario')
 
-class NotificacionService:
-    @staticmethod
-    def procesar_notificaciones_pendientes():
-        """Procesa las notificaciones pendientes"""
-        notificaciones = Notificacion.objects.filter(
-            estado='PENDIENTE'
-        ).select_related('alerta', 'destinatario')
-
-        for notificacion in notificaciones:
-            try:
-                if notificacion.tipo == 'EMAIL':
-                    NotificacionService._enviar_email(notificacion)
-                elif notificacion.tipo == 'PLATFORM':
-                    NotificacionService._enviar_platform(notificacion)
-            except Exception as e:
-                logger.error(f"Error enviando notificación {notificacion.id}: {str(e)}")
-                notificacion.registrar_error(str(e))
-
-    @staticmethod
-    def _enviar_email(notificacion):
+    def _send_email_notification(self, alerta, destinatarios):
         """Envía notificación por email"""
         try:
-            alerta = notificacion.alerta
-            subject = f"Alerta de nivel {alerta.configuracion_umbral.get_tipo_display()} en {alerta.tanque.nombre}"
+            # Construir mensaje de email
+            subject = f"Alerta de nivel en tanque {alerta.tanque.nombre}"
             message = f"""
-            Se ha detectado un nivel {alerta.configuracion_umbral.get_tipo_display()} en el tanque {alerta.tanque.nombre}
+            Se ha detectado un nivel {alerta.configuracion_umbral.get_tipo_display()} en el tanque:
 
+            Estación: {alerta.tanque.estacion.nombre}
+            Tanque: {alerta.tanque.nombre}
             Nivel detectado: {alerta.nivel_detectado}%
             Umbral: {alerta.configuracion_umbral.valor}%
-            Fecha: {alerta.fecha_generacion}
+            Fecha: {alerta.fecha_generacion.strftime('%d/%m/%Y %H:%M:%S')}
 
-            Por favor, revise la plataforma para más detalles.
+            Por favor, ingrese a la plataforma para ver más detalles y tomar las acciones necesarias.
+
+            Este es un mensaje automático, por favor no responda a este correo.
             """
-
+            
+            # Enviar email
             send_mail(
-                subject,
-                message,
-                settings.DEFAULT_FROM_EMAIL,
-                [notificacion.destinatario.email],
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.usuario.email for user in destinatarios],
                 fail_silently=False
             )
-
-            notificacion.marcar_como_enviada()
-
+            
+            logger.info(f"Email enviado exitosamente para alerta {alerta.id}")
+            
         except Exception as e:
-            logger.error(f"Error enviando email: {str(e)}")
-            notificacion.registrar_error(str(e))
+            logger.error(f"Error enviando email para alerta {alerta.id}: {str(e)}")
+            raise
 
-    @staticmethod
-    def _enviar_platform(notificacion):
-        """Envía notificación a través de websocket"""
+    def _send_websocket_notification(self, alerta):
         try:
-            channel_layer = get_channel_layer()
-            async_to_sync(channel_layer.group_send)(
-                f"user_{notificacion.destinatario.id}",
+            alert_data = {
+                "id": alerta.id,
+                "tipo": alerta.configuracion_umbral.tipo,
+                "tanque_id": alerta.tanque.id,
+                "tanque_nombre": alerta.tanque.nombre,
+                "nivel_detectado": alerta.nivel_detectado,
+                "umbral": alerta.configuracion_umbral.valor,
+                "fecha_generacion": alerta.fecha_generacion.isoformat(),
+                "estado": "NOTIFICADA",
+            }
+
+            async_to_sync(self.channel_layer.group_send)(
+                f"station_{alerta.tanque.estacion.id}",
                 {
                     "type": "notify_alert",
                     "message": {
-                        "alerta_id": notificacion.alerta.id,
-                        "tipo": notificacion.alerta.configuracion_umbral.tipo,
-                        "tanque": notificacion.alerta.tanque.nombre,
-                        "nivel": notificacion.alerta.nivel_detectado,
-                        "fecha": notificacion.alerta.fecha_generacion.isoformat()
-                    }
-                }
+                        "type": "new_alert",
+                        "data": alert_data,
+                    },
+                },
             )
-
-            notificacion.marcar_como_enviada()
-
+            logger.info(f"Notificación WebSocket enviada para alerta {alerta.id}")
         except Exception as e:
-            logger.error(f"Error enviando notificación websocket: {str(e)}")
-            notificacion.registrar_error(str(e))
+            logger.error(f"Error enviando notificación WebSocket para alerta {alerta.id}: {e}")
+
+
+    def _create_notification_records(self, alerta, destinatarios):
+        """Crea registros de notificación en la base de datos"""
+        try:
+            notifications = []
+            for rol_usuario in destinatarios:
+                # Notificación de plataforma
+                notifications.append(
+                    Notificacion(
+                        alerta=alerta,
+                        tipo='PLATFORM',
+                        destinatario=rol_usuario.usuario,
+                        estado='ENVIADA',
+                        fecha_envio=timezone.now()
+                    )
+                )
+                
+                # Notificación de email
+                notifications.append(
+                    Notificacion(
+                        alerta=alerta,
+                        tipo='EMAIL',
+                        destinatario=rol_usuario.usuario,
+                        estado='ENVIADA',
+                        fecha_envio=timezone.now()
+                    )
+                )
+            
+            # Crear todas las notificaciones en una sola operación
+            Notificacion.objects.bulk_create(notifications)
+            
+            logger.info(f"Registros de notificación creados para alerta {alerta.id}")
+            
+        except Exception as e:
+            logger.error(f"Error creando registros de notificación para alerta {alerta.id}: {str(e)}")
+            raise

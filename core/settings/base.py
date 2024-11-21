@@ -99,21 +99,9 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.tanks.tasks.calcular_promedios',
         'schedule': timedelta(minutes=1),
     },
-    'limpiar-lecturas': {
-        'task': 'apps.tanks.tasks.limpiar_lecturas_antiguas',
-        'schedule': timedelta(minutes=1),
-    },
-    'limpiar-promedios': {
-        'task': 'apps.tanks.tasks.limpiar_promedios_antiguos',
-        'schedule': timedelta(minutes=1),
-    },
-    'procesar-notificaciones': {
-        'task': 'apps.alerts.tasks.procesar_notificaciones',
-        'schedule': 30.0,  # cada 30 segundos
-    },
-    'limpiar-alertas-antiguas': {
-        'task': 'apps.alerts.tasks.limpiar_alertas_antiguas',
-        'schedule': timedelta(days=1),  # una vez al día
+    'procesar-lecturas-redis': {
+        'task': 'apps.alerts.tasks.procesar_lecturas_redis',
+        'schedule': 30.0,  # Cada 30 segundos
     },
 }
 

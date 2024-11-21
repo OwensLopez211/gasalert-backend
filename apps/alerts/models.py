@@ -39,8 +39,8 @@ class ConfiguracionUmbrales(models.Model):
         db_table = 'configuracion_umbrales'
         verbose_name = 'Configuración de Umbral'
         verbose_name_plural = 'Configuraciones de Umbrales'
-        unique_together = ['tanque', 'tipo', 'activo']
-        ordering = ['tanque', 'tipo']
+        unique_together = ['tanque', 'tipo']
+        ordering = ['tanque', 'tipo', 'activo']
 
 class Alerta(models.Model):
     """Alertas generadas por violación de umbrales"""
@@ -58,7 +58,9 @@ class Alerta(models.Model):
     )
     configuracion_umbral = models.ForeignKey(
         ConfiguracionUmbrales,
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
+        null=True,  # Permitir valores nulos en la columna
+        blank=True,
         related_name='alertas'
     )
     nivel_detectado = models.FloatField()
@@ -70,6 +72,7 @@ class Alerta(models.Model):
     )
     fecha_atencion = models.DateTimeField(null=True, blank=True)
     fecha_resolucion = models.DateTimeField(null=True, blank=True)
+
     atendida_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,

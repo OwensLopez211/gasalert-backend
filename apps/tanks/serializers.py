@@ -118,3 +118,8 @@ class DashboardEstacionSerializer(serializers.Serializer):
             ):
                 alertas += 1
         return alertas
+
+class LecturaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Lectura
+        fields = ['fecha', 'nivel', 'volumen', 'temperatura']

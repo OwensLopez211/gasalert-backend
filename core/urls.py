@@ -17,7 +17,7 @@ urlpatterns = [
     path('api/', include('apps.users.urls')),         # URLs de users
     path('api/', include('apps.stations.urls')),      # URLs de stations
     path('api/tanks/', include('apps.tanks.urls')),   # URLs de tanks
-    path('api/tanks/', include('apps.alerts.urls')),  # URLs de thresholds
+    path('api/alerts/', include('apps.alerts.urls')),  # URLs de thresholds
 ]
 
 if settings.DEBUG:

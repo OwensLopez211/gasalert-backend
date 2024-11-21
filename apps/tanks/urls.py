@@ -5,7 +5,8 @@ from .views import (
     TanqueViewSet, 
     LecturaViewSet, 
     DashboardViewSet,
-    sensor_reading
+    TankAnalyticsViewSet,
+    sensor_reading,
 )
 
 router = DefaultRouter()
@@ -13,6 +14,7 @@ router.register(r'tipos-combustible', TipoCombustibleViewSet)
 router.register(r'', TanqueViewSet, basename='tanque')
 router.register(r'lecturas', LecturaViewSet, basename='lectura')
 router.register(r'dashboard', DashboardViewSet, basename='dashboard')
+router.register(r'analytics', TankAnalyticsViewSet, basename='analytics')
 
 app_name = 'tanks'
 

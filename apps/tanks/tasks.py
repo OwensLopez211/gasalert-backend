@@ -2,62 +2,58 @@ from celery import shared_task
 from datetime import datetime
 import redis
 import json
-from apps.tanks.models import Lectura  # Asegúrate de importar tu modelo correctamente
+from apps.tanks.models import Lectura
 
 # Configura Redis
 redis_client = redis.StrictRedis(host="127.0.0.1", port=6379, db=0)
 
 @shared_task
 def calcular_promedios():
-    # Recupera las lecturas almacenadas en Redis
-    lecturas = redis_client.lrange("lecturas_tanques", 0, -1)
+    lock = redis_client.lock("calcular_promedios_lock", timeout=60)
 
-    # Si no hay lecturas, finaliza la tarea
-    if not lecturas:
-        print("No hay lecturas en Redis")
+    if not lock.acquire(blocking=False):
+        print("Otra tarea ya está procesando lecturas. Saliendo.")
         return
 
-    print("Lecturas obtenidas de Redis:", lecturas)
+    try:
+        lecturas = redis_client.lrange("lecturas_brutas", 0, -1)
+        if not lecturas:
+            print("No hay lecturas en Redis")
+            return
 
-    tanques_data = {}
+        tanques_data = {}
 
-    # Procesa cada lectura
-    for lectura_json in lecturas:
-        lectura = json.loads(lectura_json)
-        if "tank_id" not in lectura:
-            print(f"Error: Falta la clave 'tank_id' en la lectura: {lectura}")
-            continue
+        # Agrupar lecturas por tanque
+        for lectura_json in lecturas:
+            try:
+                lectura = json.loads(lectura_json)
+                tanque_id = lectura.get("tank_id")
+                nivel = lectura.get("ultima_lectura", {}).get("nivel")
+                volumen = lectura.get("ultima_lectura", {}).get("volumen")
 
-        tanque_id = lectura["tank_id"]
+                if tanque_id not in tanques_data:
+                    tanques_data[tanque_id] = {"niveles": [], "volumenes": []}
 
-        if tanque_id not in tanques_data:
-            tanques_data[tanque_id] = {
-                "niveles": [],
-                "volumenes": []
-            }
+                tanques_data[tanque_id]["niveles"].append(nivel)
+                tanques_data[tanque_id]["volumenes"].append(volumen)
 
-        tanques_data[tanque_id]["niveles"].append(lectura["ultima_lectura"]["nivel"])
-        tanques_data[tanque_id]["volumenes"].append(lectura["ultima_lectura"]["volumen"])
+            except json.JSONDecodeError:
+                print(f"Error decodificando JSON: {lectura_json}")
 
-    # Calcula los promedios y guarda en la base de datos
-    for tanque_id, datos in tanques_data.items():
-        nivel_promedio = sum(datos["niveles"]) / len(datos["niveles"])
-        volumen_promedio = sum(datos["volumenes"]) / len(datos["volumenes"])
+        # Calcular promedios y almacenar
+        for tanque_id, datos in tanques_data.items():
+            nivel_promedio = sum(datos["niveles"]) / len(datos["niveles"])
+            volumen_promedio = sum(datos["volumenes"]) / len(datos["volumenes"])
 
-        print(f"Tanque {tanque_id}: Nivel promedio: {nivel_promedio}, Volumen promedio: {volumen_promedio}")
-
-        # Guarda en la base de datos
-        try:
             Lectura.objects.create(
                 tanque_id=tanque_id,
-                fecha=datetime.now(),  # Fecha actual
+                fecha=datetime.now(),
                 nivel=nivel_promedio,
                 volumen=volumen_promedio
             )
-            print(f"Datos guardados en la base de datos para el tanque {tanque_id}")
-        except Exception as e:
-            print(f"Error al guardar en la base de datos para el tanque {tanque_id}: {e}")
+            print(f"Promedios guardados para tanque {tanque_id}: Nivel={nivel_promedio}, Volumen={volumen_promedio}")
 
-    # Limpia las lecturas en Redis
-    redis_client.delete("lecturas_tanques")
-    print("Redis limpiado tras calcular promedios.")
+    finally:
+        # Limpiar las lecturas brutas procesadas
+        redis_client.delete("lecturas_brutas")
+        lock.release()

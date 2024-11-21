@@ -1,9 +1,6 @@
 import os
 import sys
-from decouple import config
 
-print(config('DB_NAME', default=None))
-print(config('DB_USER', default=None))
 
 def main():
     """Run administrative tasks."""
