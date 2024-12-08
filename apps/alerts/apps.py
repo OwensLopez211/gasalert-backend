@@ -5,8 +5,3 @@ class AlertsConfig(AppConfig):
     name = 'apps.alerts'
     verbose_name = 'Alertas'
 
-    def ready(self):
-        try:
-            import apps.alerts.signals  # noqa
-        except ImportError:
-            pass

@@ -1,6 +1,9 @@
+# core/routing.py
+from channels.routing import ProtocolTypeRouter, URLRouter
+from channels.auth import AuthMiddlewareStack
 from django.urls import re_path
-from . import consumers
+from apps.tanks.consumers import TankStatusConsumer
 
 websocket_urlpatterns = [
-    re_path(r'ws/tank_status/$', consumers.TankStatusConsumer.as_asgi()),
+    re_path(r'ws/tank_status/$', TankStatusConsumer.as_asgi()),
 ]

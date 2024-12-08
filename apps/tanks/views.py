@@ -9,6 +9,7 @@ from django.utils import timezone
 from datetime import timedelta, datetime
 from django.db.models.functions import TruncHour, TruncDay, TruncWeek, TruncMonth
 from .models import TipoCombustible, Tanque, Lectura
+import json
 from .serializers import (
     TipoCombustibleSerializer,
     TanqueSerializer,
@@ -151,21 +152,62 @@ class DashboardViewSet(viewsets.ViewSet):
 
 @api_view(['POST'])
 def sensor_reading(request):
-    tank_id = request.data.get('tank_id')
-    reading = request.data.get('reading')
-    
-    if tank_id and reading:
+    """
+    Endpoint para recibir datos desde el Arduino.
+    """
+    try:
+        # Validar datos recibidos
+        tank_id = request.data.get('tank_id')
+        reading = request.data.get('reading')
+
+        if not tank_id or not reading:
+            return Response({"error": "Datos incompletos"}, status=status.HTTP_400_BAD_REQUEST)
+
+        nivel = reading.get('nivel')
+        volumen = reading.get('volumen')
+        temperatura = reading.get('temperatura', None)
+
+        if nivel is None or volumen is None:
+            return Response({"error": "Faltan datos clave en la lectura"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Crear el formato de última lectura
+        ultima_lectura = {
+            "nivel": nivel,
+            "volumen": volumen,
+            "temperatura": temperatura,
+            "fecha": datetime.now().isoformat()
+        }
+
+        # Almacenar en Redis
+        redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+        redis_client.rpush("lecturas_brutas", json.dumps({
+            "tank_id": tank_id,
+            "nivel": nivel,
+            "volumen": volumen,
+            "temperatura": temperatura,
+            "fecha": datetime.now().isoformat()
+        }))
+
+        # Notificar a los consumidores WebSocket
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
-            f"tank_{tank_id}",
+            "tank_updates",  # Cambiado a un grupo común
             {
                 "type": "tank_update",
-                "tank_id": tank_id,
-                "reading": reading
+                "data": {
+                    "tank_id": tank_id,
+                    "ultima_lectura": ultima_lectura  # Formato correcto para el frontend
+                }
             }
         )
-        return Response({"status": "ok"})
-    return Response({"error": "Invalid data"}, status=400)
+
+        # Retornar respuesta
+        return Response({"message": "Datos procesados exitosamente"}, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        logger.error(f"Error en sensor_reading: {str(e)}")  # Agregar logging
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class TankAnalyticsViewSet(viewsets.ViewSet):
     """
@@ -345,3 +387,126 @@ class TankAnalyticsViewSet(viewsets.ViewSet):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        
+    @action(detail=True, methods=['get'], url_path='detail')
+    def tank_detail_analysis(self, request, pk=None):
+        """
+        Retorna análisis detallado de un tanque específico.
+        """
+        try:
+            tanque = Tanque.objects.get(id=pk)
+            
+            # Calcular el promedio diario del volumen
+            daily_average = Lectura.objects.filter(tanque=tanque).aggregate(daily_avg=Avg('volumen'))['daily_avg']
+            
+            # Obtener el número de alertas activas
+            active_alerts = tanque.alertas.filter(estado="ACTIVA").count()
+            
+            # Calcular el número de lecturas críticas
+            critical_hits = Lectura.objects.filter(tanque=tanque, nivel__lt=10).count()
+
+
+            data = {
+                "daily_average": daily_average or 0,  # Manejar valores nulos
+                "active_alerts": active_alerts,
+                "critical_hits": critical_hits,
+            }
+            return Response(data)
+        except Tanque.DoesNotExist:
+            return Response({"error": "Tanque no encontrado"}, status=404)
+        
+
+    @action(detail=False, methods=['get'], url_path='consumo-promedio')
+    def consumo_promedio(self, request):
+        """
+        Calcula el consumo promedio diario y semanal.
+        Parámetros:
+        - tanque_id: ID del tanque (opcional, 'all' para todos los tanques).
+        """
+        try:
+            # Parámetros
+            tanque_id = request.query_params.get('tanque_id', 'all')
+            dias = int(request.query_params.get('dias', 7))  # Default: 7 días
+
+            # Calcular rango de fechas
+            fecha_inicio = timezone.now() - timedelta(days=dias)
+
+            # Filtrar lecturas
+            queryset = Lectura.objects.filter(fecha__gte=fecha_inicio)
+            if tanque_id != 'all':
+                queryset = queryset.filter(tanque_id=tanque_id)
+
+            # Cálculo del promedio diario
+            promedio_diario = queryset.aggregate(promedio=Avg('volumen'))['promedio'] or 0.0
+
+            # Cálculo del promedio semanal (siempre para los últimos 7 días)
+            fecha_inicio_semanal = timezone.now() - timedelta(days=7)
+            queryset_semanal = queryset.filter(fecha__gte=fecha_inicio_semanal)
+            promedio_semanal = queryset_semanal.aggregate(promedio=Avg('volumen'))['promedio'] or 0.0
+
+            # Respuesta
+            return Response({
+                "tanque_id": tanque_id,
+                "promedio_diario": round(promedio_diario, 2),
+                "promedio_semanal": round(promedio_semanal, 2),
+                "dias": dias
+            })
+
+        except ValueError:
+            return Response({"error": "El parámetro 'dias' debe ser un número entero"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"Error en consumo_promedio: {str(e)}")
+            return Response({"error": "Error interno del servidor"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+    @action(detail=False, methods=['get'], url_path='tendencia-consumo')
+    def tendencia_consumo(self, request):
+        """
+        Devuelve las lecturas de nivel para un tanque específico o para todos los tanques en un rango de tiempo.
+        Parámetros:
+        - tanque_id: ID del tanque (requerido, 'all' para todos los tanques).
+        - range: Rango de tiempo ('24h', '7d', '30d', '90d').
+        """
+        tanque_id = request.query_params.get('tanque_id', None)
+        range_type = request.query_params.get('range', '24h')
+
+        if not tanque_id:
+            return Response({"error": "tanque_id es requerido"}, status=400)
+
+        # Define los rangos de tiempo permitidos
+        now = timezone.now()
+        range_map = {
+            '24h': now - timedelta(hours=24),
+            '7d': now - timedelta(days=7),
+            '30d': now - timedelta(days=30),
+            '90d': now - timedelta(days=90),
+        }
+        fecha_inicio = range_map.get(range_type)
+        if not fecha_inicio:
+            return Response({"error": f"Rango no válido. Opciones: {', '.join(range_map.keys())}"}, status=400)
+
+        # Filtrar lecturas
+        try:
+            if tanque_id == 'all':
+                lecturas = Lectura.objects.filter(fecha__gte=fecha_inicio).order_by('fecha')
+            else:
+                lecturas = Lectura.objects.filter(
+                    tanque_id=int(tanque_id), fecha__gte=fecha_inicio
+                ).order_by('fecha')
+
+            # Verifica si hay lecturas
+            if not lecturas.exists():
+                return Response({"message": "No hay datos disponibles para el criterio especificado."}, status=200)
+
+            # Serializa los datos
+            data = [
+                {"time": lectura.fecha.strftime("%H:%M"), "nivel": lectura.nivel}
+                for lectura in lecturas
+            ]
+
+            return Response(data, status=200)
+
+        except ValueError:
+            return Response({"error": "tanque_id debe ser un número o 'all'"}, status=400)
+        except Exception as e:
+            print(f"Error en tendencia_consumo: {str(e)}")
+            return Response({"error": "Error interno del servidor"}, status=500)

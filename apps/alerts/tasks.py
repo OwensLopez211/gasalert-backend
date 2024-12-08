@@ -8,201 +8,200 @@ from django.contrib.auth import get_user_model
 from apps.tanks.models import Tanque
 from apps.alerts.models import ConfiguracionUmbrales
 
-# Configuración de Redis (si aún no la tienes configurada)
+# Configuración de Redis
 import redis
 redis_client = redis.StrictRedis(host="127.0.0.1", port=6379, db=0)
 
 @shared_task
 def procesar_lecturas_redis():
     """
-    Procesa las lecturas almacenadas en Redis, compara con los umbrales
-    configurados y genera alertas si es necesario.
-    También resuelve alertas activas si los niveles vuelven a la normalidad.
+    Procesa las lecturas almacenadas en Redis inmediatamente.
     """
-    lecturas = redis_client.lrange("lecturas_brutas", 0, -1)  # Leer lecturas brutas
+    lecturas = redis_client.lrange("lecturas_brutas", 0, -1)
     if not lecturas:
-        print("No hay lecturas en Redis")
         return
 
     for lectura_raw in lecturas:
         try:
             lectura = json.loads(lectura_raw)
             tank_id = lectura.get("tank_id")
-            nivel = lectura.get("ultima_lectura", {}).get("nivel")
+            nivel = lectura.get("nivel")
 
-            # Validar datos básicos
-            if not tank_id or nivel is None:
-                print(f"Lectura inválida: {lectura_raw}")
+            # Validación rápida de datos básicos
+            if not tank_id or nivel is None or not isinstance(nivel, (int, float)) or nivel < 0 or nivel > 100:
                 continue
 
-            if not isinstance(nivel, (int, float)) or nivel < 0 or nivel > 100:
-                print(f"Nivel inválido detectado para tanque {tank_id}: {nivel}")
-                continue
+            # Obtener y procesar umbrales inmediatamente
+            umbrales = ConfiguracionUmbrales.objects.filter(
+                tanque_id=tank_id,
+                activo=True
+            ).select_related('tanque').values("tipo", "valor", "id")
 
-            # Procesar umbrales
-            umbrales = obtener_umbrales_para_tanque(tank_id)
-            if not umbrales:
-                print(f"No se encontraron umbrales para el tanque {tank_id}")
-                continue
+            if umbrales:
+                generar_alertas_y_notificaciones(tank_id, nivel, {u["tipo"]: u for u in umbrales})
 
-            # Generar nuevas alertas si es necesario
-            alertas = verificar_violaciones_de_umbrales(tank_id, nivel, umbrales)
-            for alerta in alertas:
-                print(f"Alerta generada: Tanque {alerta['tank_id']}, Tipo: {alerta['tipo']}, Nivel detectado: {alerta['nivel']}, Umbral: {alerta['valor']}")
-                guardar_y_enviar_alerta(alerta)
-
-            # Resolver alertas activas si los niveles vuelven a la normalidad
-            resolver_alertas_activas(tank_id, nivel, umbrales)
-
-        except json.JSONDecodeError:
-            print(f"Error decodificando JSON: {lectura_raw}")
         except Exception as e:
             print(f"Error procesando lectura: {lectura_raw}. Error: {e}")
         finally:
-            # Elimina la lectura de Redis después de procesarla
+            redis_client.lpush("lecturas_procesadas", lectura_raw)
             redis_client.lrem("lecturas_brutas", 0, lectura_raw)
 
-
-def resolver_alertas_activas(tank_id, nivel, umbrales):
+def generar_alertas_y_notificaciones(tank_id, nivel, umbrales):
     """
-    Marca alertas activas como resueltas si el nivel actual ya no viola los umbrales.
+    Genera alertas y notificaciones tanto para bajadas como subidas de nivel.
     """
-    from .models import Alerta
-
-    alertas_activas = Alerta.objects.filter(
-        tanque_id=tank_id,
-        estado="ACTIVA"
-    ).select_related('configuracion_umbral')
-
-    for alerta in alertas_activas:
-        tipo = alerta.configuracion_umbral.tipo
-        umbral = umbrales.get(tipo)
-
-        if not umbral:
-            continue
-
-        # Condiciones para resolver alertas
-        if (tipo in ["CRITICO", "BAJO"] and nivel > umbral) or \
-           (tipo in ["ALTO", "LIMITE"] and nivel < umbral) or \
-           (tipo == "MEDIO" and nivel >= umbral):
-            alerta.estado = "RESUELTA"
-            alerta.fecha_resolucion = now()
-            alerta.save()
-            print(f"Alerta resuelta automáticamente: {alerta.id} para tanque {tank_id}")
-
-
-def obtener_umbrales_para_tanque(tank_id):
-    """
-    Obtiene los umbrales activos desde la base de datos para un tanque específico.
-    """
-    from .models import ConfiguracionUmbrales
-    umbrales = ConfiguracionUmbrales.objects.filter(
-        tanque_id=tank_id, activo=True
-    ).values("tipo", "valor")
-    return {u["tipo"]: u["valor"] for u in umbrales}
-
-def verificar_violaciones_de_umbrales(tank_id, nivel, umbrales):
-    alertas = []
-    
-    for tipo, valor in umbrales.items():
-        # Verifica si existe una alerta activa para este umbral y tanque
-        alerta_activa_existe = Alerta.objects.filter(
-            tanque_id=tank_id,
-            configuracion_umbral__tipo=tipo,
-            estado="ACTIVA"
-        ).exists()
-
-        # Si no hay alerta activa, evaluar condiciones para generar una nueva alerta
-        if not alerta_activa_existe:
-            if tipo == "CRITICO" and nivel <= valor:
-                # Generar alerta si el nivel está por debajo o igual al umbral CRITICO
-                alertas.append({"tank_id": tank_id, "tipo": tipo, "valor": valor, "nivel": nivel})
-            elif tipo == "BAJO" and nivel <= valor:
-                # Generar alerta si el nivel está por debajo o igual al umbral BAJO
-                alertas.append({"tank_id": tank_id, "tipo": tipo, "valor": valor, "nivel": nivel})
-            elif tipo == "MEDIO" and nivel < valor:
-                # Generar alerta si el nivel está estrictamente por debajo del umbral MEDIO
-                alertas.append({"tank_id": tank_id, "tipo": tipo, "valor": valor, "nivel": nivel})
-            elif tipo == "ALTO" and nivel >= valor:
-                # Generar alerta si el nivel está por encima o igual al umbral ALTO
-                alertas.append({"tank_id": tank_id, "tipo": tipo, "valor": valor, "nivel": nivel})
-            elif tipo == "LIMITE" and nivel >= valor:
-                # Generar alerta si el nivel está por encima o igual al umbral LIMITE
-                alertas.append({"tank_id": tank_id, "tipo": tipo, "valor": valor, "nivel": nivel})
-    
-    return alertas
-
-
-def guardar_y_enviar_alerta(alerta):
     try:
-        # Validar campos requeridos en la alerta
-        required_fields = ["tank_id", "tipo", "nivel"]
-        for field in required_fields:
-            if field not in alerta:
-                print(f"Falta el campo requerido '{field}' en la alerta.")
-                return
+        alertas_generadas = []
+        nivel = float(nivel)
 
-        # Obtener tanque y configuración de umbral
-        tanque = Tanque.objects.get(id=alerta["tank_id"])
+        # Obtener alertas activas
+        alertas_activas = Alerta.objects.filter(
+            tanque_id=tank_id,
+            estado__in=['ACTIVA', 'NOTIFICADA']
+        ).select_related('configuracion_umbral')
+
+        for alerta in alertas_activas:
+            tipo_umbral = alerta.configuracion_umbral.tipo
+            valor_umbral = float(alerta.configuracion_umbral.valor)
+
+            # Verificar si el nivel cruzó el umbral en la dirección opuesta
+            if ((tipo_umbral in ["CRITICO", "BAJO"] and nivel > valor_umbral) or 
+                (tipo_umbral in ["ALTO", "LIMITE"] and nivel < valor_umbral)):
+                
+                print(f"Nivel {nivel} cruzó umbral {valor_umbral} - Resolviendo alerta {tipo_umbral}")
+                
+                # Resolver la alerta actual
+                alerta.estado = 'RESUELTA'
+                alerta.fecha_resolucion = now()
+                alerta.save()
+                print(f"Alerta {alerta.id} resuelta.")
+
+        # Verificar nuevas violaciones de umbral
+        for tipo, umbral in umbrales.items():
+            valor_umbral = float(umbral["valor"])
+            
+            # Verificar si ya existe una alerta activa para este tipo
+            alerta_activa = Alerta.objects.filter(
+                tanque_id=tank_id,
+                configuracion_umbral__tipo=tipo,
+                estado__in=['ACTIVA', 'NOTIFICADA']
+            ).exists()
+
+            if not alerta_activa:
+                if (tipo in ["CRITICO", "BAJO"] and nivel <= valor_umbral) or \
+                   (tipo in ["ALTO", "LIMITE"] and nivel >= valor_umbral):
+                    alerta = guardar_alerta(tank_id, tipo, nivel, valor_umbral)
+                    if alerta:
+                        alertas_generadas.append(alerta)
+                        print(f"Nueva alerta generada por cruce de umbral: Tipo {tipo}, Nivel {nivel}")
+
+        # Enviar notificaciones para todas las alertas generadas
+        if alertas_generadas:
+            enviar_notificaciones_y_websocket(alertas_generadas)
+            print(f"Se generaron y notificaron {len(alertas_generadas)} alertas")
+
+        return alertas_generadas
+
+    except Exception as e:
+        print(f"Error en generar_alertas_y_notificaciones: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return []
+
+    
+def guardar_alerta(tank_id, tipo, nivel, valor):
+    """
+    Crea una nueva alerta en la base de datos.
+    """
+    try:
+        tanque = Tanque.objects.get(id=tank_id)
         umbral = ConfiguracionUmbrales.objects.get(
-            tanque_id=alerta["tank_id"],
-            tipo=alerta["tipo"]
+            tanque_id=tank_id, 
+            tipo=tipo,
+            activo=True
         )
 
-        # Crear la alerta
-        alerta_obj = Alerta.objects.create(
+        # Verificar la última alerta para este umbral
+        ultima_alerta = Alerta.objects.filter(
             tanque=tanque,
-            configuracion_umbral=umbral,
-            nivel_detectado=alerta["nivel"],
-            estado="ACTIVA",
-            fecha_generacion=now()
-        )
-        print(f"Alerta creada: {alerta_obj}")
+            configuracion_umbral__tipo=tipo
+        ).order_by('-fecha_generacion').first()
 
-        # Obtener usuarios relacionados con la estación del tanque
-        User = get_user_model()
-        usuarios = User.objects.filter(
-            roles_estaciones__estacion=tanque.estacion,
-            roles_estaciones__activo=True
-        ).distinct()
-
-        if not usuarios.exists():
-            print(f"No hay usuarios asociados a la estación {tanque.estacion.id}.")
-        else:
-            # Crear notificaciones para los usuarios
-            for usuario in usuarios:
-                Notificacion.objects.create(
-                    alerta=alerta_obj,
-                    tipo="PLATFORM",
-                    destinatario=usuario,
-                    estado="PENDIENTE"
-                )
-            print(f"Notificaciones creadas para {len(usuarios)} usuarios en la estación {tanque.estacion.id}.")
-
-        # Enviar notificación en tiempo real al WebSocket
-        channel_layer = get_channel_layer()
-        if channel_layer is not None:
-            async_to_sync(channel_layer.group_send)(
-                f"station_{tanque.estacion.id}",
-                {
-                    "type": "notify_alert",
-                    "message": {
-                        "id": alerta_obj.id,
-                        "tanque_id": tanque.id,
-                        "tipo": alerta["tipo"],
-                        "nivel_detectado": alerta["nivel"],
-                        "umbral": alerta["valor"],
-                        "fecha_generacion": alerta_obj.fecha_generacion.isoformat(),
-                    },
-                },
+        # Solo crear nueva alerta si no hay última alerta o la última está resuelta
+        if not ultima_alerta or ultima_alerta.estado == 'RESUELTA':
+            alerta = Alerta.objects.create(
+                tanque=tanque,
+                configuracion_umbral=umbral,
+                nivel_detectado=nivel,
+                estado="ACTIVA",
+                fecha_generacion=now(),
             )
-            print(f"Notificación enviada al WebSocket para estación {tanque.estacion.id}.")
-        else:
-            print("Error: No se pudo obtener el channel_layer para enviar notificación.")
+            print(f"✅ Alerta creada: {alerta}")
+            return alerta
+        
+        return None
 
     except Tanque.DoesNotExist:
-        print(f"Error: Tanque con ID {alerta['tank_id']} no encontrado.")
+        print(f"Error: Tanque con ID {tank_id} no encontrado")
     except ConfiguracionUmbrales.DoesNotExist:
-        print(f"Error: Configuración de umbral para tanque {alerta['tank_id']} y tipo {alerta['tipo']} no encontrada.")
+        print(f"Error: Configuración de umbral para tanque {tank_id} y tipo {tipo} no encontrada")
     except Exception as e:
-        print(f"Error al guardar o enviar alerta: {e}")
+        print(f"Error al guardar alerta: {e}")
+    return None
+
+def enviar_notificaciones_y_websocket(alertas):
+    """
+    Envía notificaciones a los usuarios y envía alertas en tiempo real al WebSocket.
+    """
+    try:
+        for alerta in alertas:
+            tanque = alerta.tanque
+            usuarios = get_user_model().objects.filter(
+                roles_estaciones__estacion=tanque.estacion,
+                roles_estaciones__activo=True
+            ).distinct()
+
+            # Crear notificaciones en bulk
+            notificaciones = [
+                Notificacion(
+                    alerta=alerta,
+                    tipo="PLATFORM",
+                    destinatario=usuario,
+                    estado="PENDIENTE",
+                    fecha_envio=now(),
+                )
+                for usuario in usuarios
+            ]
+            notificaciones_creadas = Notificacion.objects.bulk_create(notificaciones)
+
+            # Tomar la primera notificación para el mensaje WebSocket
+            if notificaciones_creadas:
+                primera_notificacion = notificaciones_creadas[0]
+                mensaje_ws = {
+                    "id": primera_notificacion.id,
+                    "mensaje": f"Alerta: {alerta.configuracion_umbral.tipo} en {tanque.nombre}",
+                    "fecha_envio": primera_notificacion.fecha_envio.isoformat(),
+                    "fecha_lectura": None,
+                    "alerta_id": alerta.id,
+                    "nivel_detectado": alerta.nivel_detectado,
+                    "umbral": alerta.configuracion_umbral.valor,
+                    "tipo": alerta.configuracion_umbral.tipo,
+                    "notificacion_id": primera_notificacion.id  # Agregar explícitamente
+                }
+
+                # Enviar una sola vez por alerta al WebSocket
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    async_to_sync(channel_layer.group_send)(
+                        f"station_{tanque.estacion.id}",
+                        {
+                            "type": "notify_alert",
+                            "message": mensaje_ws
+                        },
+                    )
+                print(f"Notificación enviada con ID: {primera_notificacion.id}")
+
+    except Exception as e:
+        print(f"Error al enviar notificaciones o WebSocket: {e}")
+        import traceback
+        print(traceback.format_exc())

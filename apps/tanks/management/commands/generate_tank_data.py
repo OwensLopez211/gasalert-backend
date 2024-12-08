@@ -1,97 +1,111 @@
 from django.core.management.base import BaseCommand
-from django.utils import timezone
-from datetime import timedelta
+from apps.tanks.models import Lectura, Tanque
+from datetime import datetime, timedelta
 import random
-from apps.tanks.models import Tanque, Lectura
 
 
 class Command(BaseCommand):
-    help = 'Genera datos históricos de prueba para los tanques con trazabilidad realista'
+    help = 'Genera lecturas simuladas minuto a minuto para los últimos 9 meses de cada tanque con mayor variabilidad'
 
-    def add_arguments(self, parser):
-        parser.add_argument(
-            '--days',
-            type=int,
-            default=30,
-            help='Número de días de histórico a generar'
-        )
-        parser.add_argument(
-            '--frequency',
-            type=int,
-            default=5,
-            help='Frecuencia de lecturas en minutos'
-        )
+    def handle(self, *args, **kwargs):
+        try:
+            # Configuración de los tanques
+            tanques = [
+                {"id": 3, "capacidad": 10000, "consumo_horario": (15, 25)},  # Bencina 93
+                {"id": 4, "capacidad": 25000, "consumo_horario": (30, 50)},  # Bencina 95
+                {"id": 2, "capacidad": 15000, "consumo_horario": (40, 70)},  # Diesel
+            ]
 
-    def handle(self, *args, **options):
-        days = options['days']
-        frequency = options['frequency']
+            # Configuración de tiempo
+            fecha_final = datetime.now()
+            fecha_inicial = fecha_final - timedelta(days=270)  # Últimos 9 meses
 
-        # Obtener tanques específicos
-        tanques = Tanque.objects.filter(id__in=[2, 3, 4, 5], activo=True)
+            # Variabilidad por semana
+            def get_weekly_variation(week_number):
+                """
+                Genera una variación semanal basada en un número de semana.
+                """
+                random.seed(week_number)
+                return random.uniform(0.8, 1.2)  # Variación entre 80% y 120%
 
-        if not tanques.exists():
-            self.stdout.write(
-                self.style.ERROR('No se encontraron tanques activos con los IDs especificados')
-            )
-            return
+            # Iterar sobre cada tanque
+            for tanque_data in tanques:
+                tanque = Tanque.objects.get(id=tanque_data["id"])
+                capacidad = tanque_data["capacidad"]
+                volumen_actual = capacidad * random.uniform(0.75, 0.85)  # Comenzar entre 75%-85%
 
-        # Definir las capacidades de los tanques según los IDs proporcionados
-        capacidades = {
-            2: 15000,
-            3: 10000,
-            4: 25000,
-            5: 12,
-        }
+                self.stdout.write(f"Generando datos para el tanque {tanque.nombre} (ID: {tanque.id})...")
 
-        end_date = timezone.now()
-        start_date = end_date - timedelta(days=days)
+                # Iterar por cada minuto en el rango de tiempo
+                fecha_actual = fecha_inicial
+                lecturas = []
 
-        for tanque in tanques:
-            capacidad_total = capacidades.get(tanque.id, tanque.capacidad_total)
-            self.stdout.write(
-                self.style.SUCCESS(f'Generando datos para tanque: {tanque.nombre}')
-            )
+                while fecha_actual <= fecha_final:
+                    week_number = fecha_actual.isocalendar()[1]
+                    daily_variation = random.uniform(0.9, 1.1)  # Variación diaria adicional
+                    weekly_factor = get_weekly_variation(week_number)
 
-            # Inicializar nivel y volumen
-            nivel_actual = random.uniform(70, 90)  # Nivel inicial entre 70% y 90%
-            volumen_actual = (nivel_actual / 100) * capacidad_total
+                    # Consumo base ajustado por hora y semana
+                    hora = fecha_actual.hour
+                    if 6 <= hora < 10 or 16 <= hora < 20:  # Horas pico
+                        consumo_por_minuto = (
+                            random.uniform(*tanque_data["consumo_horario"]) / 60 * 1.2 * weekly_factor * daily_variation
+                        )
+                    else:
+                        consumo_por_minuto = (
+                            random.uniform(*tanque_data["consumo_horario"]) / 60 * 0.8 * weekly_factor * daily_variation
+                        )
 
-            current_date = start_date
-            lecturas_creadas = 0
-            dias_desde_ultima_recarga = 0  # Para controlar las recargas
+                    # Ajustes estacionales
+                    if fecha_actual.month in [6, 7, 8]:  # Invierno
+                        if tanque.nombre == "Diesel":
+                            consumo_por_minuto *= 1.25
+                    elif fecha_actual.month in [12, 1, 2]:  # Verano
+                        if tanque.nombre in ["Bencina 93", "Bencina 95"]:
+                            consumo_por_minuto *= 1.15
 
-            while current_date <= end_date:
-                # Disminuir nivel y volumen gradualmente por ventas
-                disminucion = random.uniform(0.5, 1.5)  # Disminución realista por venta
-                nivel_actual -= disminucion
-                volumen_actual = (nivel_actual / 100) * capacidad_total
+                    # Ajustes por días de la semana
+                    if fecha_actual.weekday() in [5, 6]:  # Fin de semana
+                        consumo_por_minuto *= 0.9
 
-                # Garantizar que el nivel nunca llegue a cero
-                if nivel_actual < 10:  # Si está cerca de 0, recargar inmediatamente
-                    self.stdout.write(self.style.WARNING(f'Recargando tanque {tanque.nombre}...'))
-                    nivel_actual = random.uniform(70, 90)  # Recarga a un nivel seguro
-                    volumen_actual = (nivel_actual / 100) * capacidad_total
-                    dias_desde_ultima_recarga = 0  # Reiniciar contador de días
+                    # Reducir el volumen según el consumo
+                    volumen_actual -= consumo_por_minuto
 
-                # Crear lectura
-                Lectura.objects.create(
-                    tanque=tanque,
-                    fecha=current_date,
-                    nivel=nivel_actual,
-                    volumen=volumen_actual,
-                )
-                lecturas_creadas += 1
+                    # Simulación de reabastecimiento
+                    if volumen_actual <= capacidad * random.uniform(0.15, 0.25):  # Umbral crítico ajustado aleatoriamente
+                        volumen_actual = capacidad
 
-                # Avanzar en el tiempo
-                current_date += timedelta(minutes=frequency)
-                dias_desde_ultima_recarga += (frequency / 1440)  # Incrementar días
+                    # Evitar valores negativos
+                    volumen_actual = max(0, volumen_actual)
 
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f'Creadas {lecturas_creadas} lecturas para {tanque.nombre}'
-                )
-            )
+                    # Nivel en porcentaje
+                    nivel = (volumen_actual / capacidad) * 100
 
-        self.stdout.write(
-            self.style.SUCCESS('Generación de datos completada')
-        )
+                    # Crear la lectura
+                    lecturas.append(
+                        Lectura(
+                            tanque=tanque,
+                            fecha=fecha_actual,
+                            nivel=round(nivel, 2),
+                            volumen=round(volumen_actual, 2),
+                        )
+                    )
+
+                    # Avanzar un minuto
+                    fecha_actual += timedelta(minutes=1)
+
+                    # Guardar en lotes para optimizar rendimiento
+                    if len(lecturas) >= 1000:
+                        Lectura.objects.bulk_create(lecturas, batch_size=1000)
+                        lecturas = []
+
+                # Insertar las lecturas restantes
+                if lecturas:
+                    Lectura.objects.bulk_create(lecturas, batch_size=1000)
+
+                self.stdout.write(self.style.SUCCESS(f"Datos generados para el tanque {tanque.nombre}"))
+
+            self.stdout.write(self.style.SUCCESS("¡Datos simulados generados exitosamente!"))
+
+        except Exception as e:
+            self.stderr.write(f"Error al generar datos simulados: {e}")

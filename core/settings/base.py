@@ -13,6 +13,8 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 ASGI_APPLICATION = 'core.asgi.application'
 ALLOWED_HOSTS = ['*']
 
+
+
 # Application definition
 DJANGO_APPS = [
     'django.contrib.admin',
@@ -25,6 +27,7 @@ DJANGO_APPS = [
 
 THIRD_PARTY_APPS = [
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'drf_spectacular',
     'debug_toolbar',
@@ -38,6 +41,7 @@ LOCAL_APPS = [
     'apps.stations.apps.StationsConfig',
     'apps.tanks.apps.TanksConfig',
     'apps.alerts.apps.AlertsConfig',
+    'apps.reports.apps.ReportsConfig',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -99,9 +103,9 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.tanks.tasks.calcular_promedios',
         'schedule': timedelta(minutes=1),
     },
-    'procesar-lecturas-redis': {
+    'procesar-lecturas': {
         'task': 'apps.alerts.tasks.procesar_lecturas_redis',
-        'schedule': 30.0,  # Cada 30 segundos
+        'schedule': 2.0,  # Cada 2 segundos
     },
 }
 
@@ -114,8 +118,13 @@ SESSION_COOKIE_AGE = 86400  # 24 horas en segundos
 # Configuración de canales
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
-    }
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+            "capacity": 1500,
+            "expiry": 10,
+        },
+    },
 }
 
 
@@ -195,9 +204,25 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://localhost:8001",
+]
 
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
 
 #IDK
 # Asegurarse de que el directorio logs existe
@@ -245,3 +270,15 @@ LOGGING = {
 }
 
 USE_TZ = False
+
+
+# Agregar temporalmente al final de settings/base.py
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
+try:
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_add)("test", "test")
+    print("Conexión exitosa a Redis channel layer")
+except Exception as e:
+    print(f"Error conectando a Redis: {e}")

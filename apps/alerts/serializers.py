@@ -84,12 +84,33 @@ class UmbralesConfiguracionSerializer(serializers.Serializer):
         return data
     
 class AlertaSerializer(serializers.ModelSerializer):
+    tipo_umbral = serializers.CharField(source='configuracion_umbral.tipo', read_only=True)
     class Meta:
         model = Alerta
         fields = '__all__'  # O puedes especificar los campos manualmente
 
 class NotificacionSerializer(serializers.ModelSerializer):
+    mensaje = serializers.SerializerMethodField()
+    fecha_generacion = serializers.SerializerMethodField()
+
     class Meta:
         model = Notificacion
-        fields = '__all__'
+        fields = [
+            'id',  # Este es el ID de la notificación, no de la alerta
+            'mensaje',
+            'fecha_envio',
+            'fecha_lectura',
+            'fecha_generacion',
+            'alerta',  # Incluimos el ID de la alerta por referencia
+        ]
+
+    def get_mensaje(self, obj):
+        if obj.alerta and obj.alerta.configuracion_umbral:
+            return f"Alerta: {obj.alerta.configuracion_umbral.tipo} en {obj.alerta.tanque.nombre}"
+        return "Nueva notificación"
+
+    def get_fecha_generacion(self, obj):
+        if obj.alerta:
+            return obj.alerta.fecha_generacion.isoformat()
+        return None
 

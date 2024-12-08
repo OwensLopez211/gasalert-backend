@@ -13,11 +13,12 @@ urlpatterns = [
     path('api/schema/swagger/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     
-    # Aqui van las urls de las respectivas APIS
+    # Aquí van las urls de las respectivas APIS
     path('api/', include('apps.users.urls')),         # URLs de users
     path('api/', include('apps.stations.urls')),      # URLs de stations
     path('api/tanks/', include('apps.tanks.urls')),   # URLs de tanks
-    path('api/alerts/', include('apps.alerts.urls')),  # URLs de thresholds
+    path('api/alerts/', include('apps.alerts.urls')), # URLs de alerts
+    path('api/reports/', include('apps.reports.urls')),  # URLs de reports
 ]
 
 if settings.DEBUG:
