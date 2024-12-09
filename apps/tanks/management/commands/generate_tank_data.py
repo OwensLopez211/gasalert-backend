@@ -5,7 +5,7 @@ import random
 
 
 class Command(BaseCommand):
-    help = 'Genera lecturas simuladas minuto a minuto para los últimos 9 meses de cada tanque con mayor variabilidad'
+    help = "Genera lecturas simuladas minuto a minuto para los últimos 9 meses con mayor variabilidad."
 
     def handle(self, *args, **kwargs):
         try:
@@ -20,11 +20,8 @@ class Command(BaseCommand):
             fecha_final = datetime.now()
             fecha_inicial = fecha_final - timedelta(days=270)  # Últimos 9 meses
 
-            # Variabilidad por semana
             def get_weekly_variation(week_number):
-                """
-                Genera una variación semanal basada en un número de semana.
-                """
+                """Variación semanal basada en el número de semana."""
                 random.seed(week_number)
                 return random.uniform(0.8, 1.2)  # Variación entre 80% y 120%
 
@@ -36,7 +33,6 @@ class Command(BaseCommand):
 
                 self.stdout.write(f"Generando datos para el tanque {tanque.nombre} (ID: {tanque.id})...")
 
-                # Iterar por cada minuto en el rango de tiempo
                 fecha_actual = fecha_inicial
                 lecturas = []
 
@@ -88,6 +84,7 @@ class Command(BaseCommand):
                             fecha=fecha_actual,
                             nivel=round(nivel, 2),
                             volumen=round(volumen_actual, 2),
+                            temperatura=round(random.uniform(15, 35), 2),  # Temperatura aleatoria
                         )
                     )
 

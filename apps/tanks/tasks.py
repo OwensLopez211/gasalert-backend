@@ -86,5 +86,5 @@ def calcular_promedios():
 
     finally:
         # Limpiar las lecturas brutas procesadas
-        redis_client.delete("lecturas_brutas")
+        redis_client.delete("lecturas_procesadas")
         lock.release()

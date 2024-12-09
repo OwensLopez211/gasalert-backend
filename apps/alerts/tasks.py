@@ -7,6 +7,8 @@ from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
 from apps.tanks.models import Tanque
 from apps.alerts.models import ConfiguracionUmbrales
+from django.core.mail import send_mail
+from django.conf import settings
 
 # Configuración de Redis
 import redis
@@ -173,6 +175,18 @@ def enviar_notificaciones_y_websocket(alertas):
                 for usuario in usuarios
             ]
             notificaciones_creadas = Notificacion.objects.bulk_create(notificaciones)
+
+            # Enviar correo electrónico a cada usuario
+            for usuario in usuarios:
+                subject = f"Nueva alerta: {alerta.configuracion_umbral.tipo} en {tanque.nombre}"
+                message = f"Se ha generado una nueva alerta:\n\n" \
+                          f"Tanque: {tanque.nombre}\n" \
+                          f"Tipo de alerta: {alerta.configuracion_umbral.tipo}\n" \
+                          f"Nivel detectado: {alerta.nivel_detectado}%\n" \
+                          f"Fecha: {alerta.fecha_generacion.strftime('%Y-%m-%d %H:%M:%S')}"
+                from_email = settings.DEFAULT_FROM_EMAIL
+                recipient_list = [usuario.email]
+                send_mail(subject, message, from_email, recipient_list)
 
             # Tomar la primera notificación para el mensaje WebSocket
             if notificaciones_creadas:
