@@ -6,6 +6,47 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from .models import UserActionLog
 from .models import Role, Permission, UserSession
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    def post(self, request, *args, **kwargs):
+        try:
+            response = super().post(request, *args, **kwargs)
+            
+            if response.status_code == 200:
+                # Obtener el usuario que acaba de autenticarse
+                user = User.objects.get(username=request.data.get('username'))
+                
+                # Crear sesión de usuario
+                UserSession.objects.create(
+                    usuario=user,
+                    ip_usuario=request.META.get('REMOTE_ADDR', '')
+                )
+                
+                # Obtener las estaciones del usuario
+                estaciones = user.roles_estaciones.filter(activo=True).values()
+                
+                # Añadir información adicional a la respuesta
+                response.data.update({
+                    'user': {
+                        'id': user.id,
+                        'username': user.username,
+                        'email': user.email,
+                        'tipo_usuario': user.tipo_usuario,
+                        'estacion_id': user.estacion_id,
+                        'estaciones': list(estaciones)
+                    }
+                })
+                
+                return response
+            
+            return response
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 from .serializers import (
     UserSerializer,
     UserDetailSerializer,
@@ -17,6 +58,39 @@ from .serializers import (
 )
 
 User = get_user_model()
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    def post(self, request, *args, **kwargs):
+        try:
+            response = super().post(request, *args, **kwargs)
+            
+            if response.status_code == 200:
+                # Crear sesión de usuario
+                UserSession.objects.create(
+                    usuario=request.user,
+                    ip_usuario=request.META.get('REMOTE_ADDR', '')
+                )
+                
+                # Añadir información adicional si es necesario
+                data = response.data
+                user = request.user
+                data['user'] = {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'tipo_usuario': user.tipo_usuario,
+                    'estacion_id': user.estacion_id
+                }
+                
+                return Response(data)
+            
+            return response
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class CustomPermissions:
     """

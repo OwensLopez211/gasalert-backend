@@ -2,8 +2,10 @@ from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.decorators import api_view
+from scipy import stats
 from rest_framework.response import Response
 from django.db.models import Avg, Max, Min, Count, Q
+import numpy as np
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import timedelta, datetime
@@ -523,15 +525,10 @@ class TankAnalyticsViewSet(viewsets.ViewSet):
         
     @action(detail=True, methods=['get'])
     def tendencia_consumo(self, request, pk=None):
-        """
-        Devuelve la tendencia de consumo de un tanque en un rango de tiempo.
-        """
         try:
-            # Obtén el tanque
             tanque = Tanque.objects.get(pk=pk)
-
-            # Rango de tiempo
-            range_type = request.query_params.get('range', '7d')  # Default: 7 días
+            
+            range_type = request.query_params.get('range', '7d')
             now = timezone.now()
             range_map = {
                 '24h': now - timedelta(hours=24),
@@ -540,41 +537,135 @@ class TankAnalyticsViewSet(viewsets.ViewSet):
             }
             fecha_inicio = range_map.get(range_type, now - timedelta(days=7))
 
-            # Filtra las lecturas en el rango de tiempo
             lecturas = Lectura.objects.filter(
                 tanque=tanque,
                 fecha__gte=fecha_inicio
-            ).order_by('fecha')
+            ).order_by('fecha').only('fecha', 'volumen')
 
             if not lecturas.exists():
                 return Response({"message": "No hay datos disponibles."}, status=200)
 
-            # Calcular tendencia
-            tendencia = []
-            umbral = 0.01  # Ignorar fluctuaciones menores
+            tiempos, volumenes, consumos = [], [], []
+            primera_fecha = lecturas.first().fecha
+
             for i in range(1, len(lecturas)):
                 anterior = lecturas[i - 1]
                 actual = lecturas[i]
+                delta_tiempo = (actual.fecha - primera_fecha).total_seconds() / 3600
+                tiempos.append(delta_tiempo)
+                volumenes.append(actual.volumen)
                 consumo = anterior.volumen - actual.volumen
+                if consumo > 0:
+                    consumos.append(consumo)
 
-                # Ignorar fluctuaciones menores
-                if consumo > umbral:
-                    tendencia.append({
-                        "fecha": actual.fecha.isoformat(),
-                        "consumo": round(consumo, 2),
-                        "nivel_actual": actual.nivel,
-                    })
+            if not consumos:
+                return Response({
+                    "tanque_id": pk,
+                    "nombre_tanque": tanque.nombre,
+                    "periodo_analisis": {
+                        "inicio": fecha_inicio.isoformat(),
+                        "fin": now.isoformat(),
+                    },
+                    "tendencia_general": {
+                        "direccion": None,
+                        "confianza": None,
+                        "tasa_cambio": None,
+                    },
+                    "estadisticas": {
+                        "consumo_promedio": 0,
+                        "desviacion_estandar": 0,
+                        "coeficiente_variacion": 0,
+                    },
+                    "patrones": {
+                        "horas_mayor_consumo": [],
+                        "horas_menor_consumo": [],
+                    },
+                    "anomalias": [],
+                    "datos_tendencia": [],
+                })
 
-            # Verificar si no hay consumos detectados
-            if not tendencia:
-                return Response({"message": "No se detectaron consumos en el rango seleccionado."}, status=200)
 
-            return Response({
+            slope, intercept, r_value, *_ = stats.linregress(tiempos, volumenes)
+            consumo_promedio = np.mean(consumos)
+            consumo_std = np.std(consumos)
+
+            consumos_por_hora = {}
+            for i, lectura in enumerate(lecturas[1:], 1):
+                hora = lectura.fecha.hour
+                consumo = lecturas[i-1].volumen - lectura.volumen
+                if hora not in consumos_por_hora:
+                    consumos_por_hora[hora] = []
+                consumos_por_hora[hora].append(consumo)
+
+            patrones_hora = {
+                hora: np.mean(consumos) 
+                for hora, consumos in consumos_por_hora.items()
+            }
+
+            horas_ordenadas = sorted(
+                patrones_hora.items(), 
+                key=lambda x: x[1], 
+                reverse=True
+            )
+
+            tendencia = {
+                "direccion": "AUMENTANDO" if slope > 0 else "DISMINUYENDO",
+                "confianza": abs(r_value),
+                "tasa_cambio": abs(slope),
+            }
+
+            umbral_anomalia = consumo_promedio + (2 * consumo_std)
+            anomalias = [
+                {
+                    "fecha": lecturas[i].fecha.isoformat(),
+                    "consumo": consumo,
+                    "desviacion": (consumo - consumo_promedio) / consumo_std
+                }
+                for i, consumo in enumerate(consumos)
+                if consumo > umbral_anomalia
+            ][:50]  # Limitar anomalías a 50
+
+            max_puntos = 500
+            step = max(1, len(consumos) // max_puntos)
+            datos_tendencia = [
+                {
+                    "fecha": lecturas[i].fecha.isoformat(),
+                    "volumen": lecturas[i].volumen,
+                    "consumo": consumo if consumo > 0 else 0,
+                    "tendencia_calculada": intercept + slope * tiempos[i - 1]
+                }
+                for i, consumo in enumerate(consumos, 1)
+                if i % step == 0
+            ]
+
+            response_data = {
                 "tanque_id": pk,
                 "nombre_tanque": tanque.nombre,
-                "capacidad_total": tanque.capacidad_total,
-                "tendencia": tendencia,
-            })
+                "periodo_analisis": {
+                    "inicio": fecha_inicio.isoformat(),
+                    "fin": now.isoformat(),
+                },
+                "tendencia_general": tendencia,
+                "estadisticas": {
+                    "consumo_promedio": round(consumo_promedio, 2),
+                    "desviacion_estandar": round(consumo_std, 2),
+                    "coeficiente_variacion": round(consumo_std / consumo_promedio * 100, 2),
+                },
+                "patrones": {
+                    "horas_mayor_consumo": [
+                        {"hora": hora, "consumo_promedio": round(consumo, 2)} 
+                        for hora, consumo in horas_ordenadas[:3]
+                    ],
+                    "horas_menor_consumo": [
+                        {"hora": hora, "consumo_promedio": round(consumo, 2)} 
+                        for hora, consumo in horas_ordenadas[-3:]
+                    ],
+                },
+                "anomalias": anomalias,
+                "datos_tendencia": datos_tendencia,
+            }
+
+            return Response(response_data)
 
         except Tanque.DoesNotExist:
             return Response({"error": "Tanque no encontrado."}, status=404)
