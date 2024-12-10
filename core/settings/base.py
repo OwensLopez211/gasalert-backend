@@ -213,7 +213,12 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ORIGINS = [ 
+    "http://45.236.131.238",
+    "http://45.236.131.238:3000",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://localhost:8001",]
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
@@ -230,7 +235,7 @@ CORS_ALLOW_HEADERS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://413e-2800-150-11e-2842-e02e-7660-b71a-dcac.ngrok-free.app",
+    "http://45.236.131.238",
 ]
 
 #IDK
