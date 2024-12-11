@@ -12,34 +12,34 @@ class Command(BaseCommand):
             # Configuración de los tanques con consumos más realistas
             tanques = [
                 {
-                    "id": 3, 
+                    "id": 1, 
                     "capacidad":10000,  # Capacidad más realista
                     "consumo_base": {
                         "hora_pico": (250, 400),     # L/h en horas pico
                         "hora_normal": (150, 250),   # L/h en horas normales
                         "hora_baja": (50, 150)       # L/h en horas bajas
                     },
-                    "nombre": "Bencina 93"
+                    "nombre": "Tanque 93 (Ficticio)"
                 },
                 {
-                    "id": 4, 
+                    "id": 2, 
                     "capacidad": 25000,
                     "consumo_base": {
                         "hora_pico": (300, 450),
                         "hora_normal": (200, 300),
                         "hora_baja": (75, 175)
                     },
-                    "nombre": "Bencina 95"
+                    "nombre": "Tanque 95 (Ficticio)"
                 },
                 {
-                    "id": 2, 
+                    "id": 3, 
                     "capacidad": 15000,
                     "consumo_base": {
                         "hora_pico": (350, 500),
                         "hora_normal": (250, 350),
                         "hora_baja": (100, 200)
                     },
-                    "nombre": "Diesel"
+                    "nombre": "Tanque diesel (Ficticio)"
                 }
             ]
 
