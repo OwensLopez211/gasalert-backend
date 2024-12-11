@@ -1,142 +1,168 @@
-from rest_framework.viewsets import ViewSet
-from rest_framework.response import Response
-from rest_framework import status
-from django.http import HttpResponse
-from .services.report_generators import generate_pdf_report, generate_excel_report, generate_csv_report
-from .services.report_data_service import ReportDataService
-from .models import ReportLog
-import logging
+# from rest_framework.viewsets import ViewSet
+# from rest_framework.response import Response
+# from rest_framework import status
+# from django.http import HttpResponse
+# from .services.report_generators import generate_pdf_report, generate_excel_report, generate_csv_report
+# from .services.report_data_service import ReportDataService
+# from .models import ReportLog
+# import logging
 
 
 
 from rest_framework.viewsets import ViewSet
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.http import HttpResponse
 from django.db import connection
-import csv
-from io import StringIO, BytesIO
-from reportlab.pdfgen import canvas
-import xlsxwriter
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from io import BytesIO
+import logging
 
-class BaseReportViewSet(ViewSet):
-    """
-    Clase base para los reportes. Contiene métodos reutilizables.
-    """
+logger = logging.getLogger(__name__)
 
+class PDFReportViewSet(ViewSet):
+    """
+    ViewSet para generar reportes PDF completos usando procedimientos almacenados.
+    """
+    
     def call_stored_procedure(self, proc_name, params):
         """
         Llama a un procedimiento almacenado y devuelve los resultados.
         """
         with connection.cursor() as cursor:
             cursor.callproc(proc_name, params)
-            columns = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()
-        return [dict(zip(columns, row)) for row in rows]
+            if cursor.description:  # Verificar si hay resultados
+                columns = [col[0] for col in cursor.description]
+                rows = cursor.fetchall()
+                return [dict(zip(columns, row)) for row in rows]
+            return []
 
-    def generate_csv(self, data, filename="reporte.csv"):
+    def generate_pdf_report(self, data):
         """
-        Genera un archivo CSV a partir de los datos.
+        Genera un PDF formateado con los datos proporcionados
         """
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = f'attachment; filename="{filename}"'
-        writer = csv.DictWriter(response, fieldnames=data[0].keys())
-        writer.writeheader()
-        writer.writerows(data)
-        return response
-
-    def generate_pdf(self, data, filename="reporte.pdf"):
-        """
-        Genera un archivo PDF a partir de los datos.
-        """
-        response = HttpResponse(content_type="application/pdf")
-        response["Content-Disposition"] = f'attachment; filename="{filename}"'
-
         buffer = BytesIO()
-        pdf = canvas.Canvas(buffer)
-        pdf.drawString(100, 800, "Reporte Generado")
-        y = 750
-        for row in data:
-            pdf.drawString(100, y, str(row))
-            y -= 20
-        pdf.save()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        elements = []
+        styles = getSampleStyleSheet()
 
-        response.write(buffer.getvalue())
-        buffer.close()
-        return response
+        # Título del reporte
+        elements.append(Paragraph("Reporte de Análisis de Tanques", styles['Title']))
+        elements.append(Paragraph("<br/><br/>", styles['Normal']))
 
-    def generate_excel(self, data, filename="reporte.xlsx"):
+        # Procesar cada sección de datos
+        for section in data:
+            if section['data']:
+                # Título de la sección
+                elements.append(Paragraph(section['title'], styles['Heading1']))
+                
+                # Convertir datos a tabla
+                table_data = [list(section['data'][0].keys())]  # Headers
+                table_data.extend([list(item.values()) for item in section['data']])
+                
+                # Crear y estilizar la tabla
+                table = Table(table_data)
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.blue),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 14),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 12),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                
+                elements.append(table)
+                elements.append(Paragraph("<br/><br/>", styles['Normal']))
+
+        doc.build(elements)
+        return buffer
+
+    @action(detail=False, methods=['get'])
+    def generate(self, request):
         """
-        Genera un archivo Excel a partir de los datos.
+        Genera un reporte PDF completo con datos de múltiples procedimientos almacenados.
         """
-        output = BytesIO()
-        workbook = xlsxwriter.Workbook(output)
-        worksheet = workbook.add_worksheet()
+        try:
+            # Obtener parámetros
+            tank_id = request.query_params.get('tank_id')
+            station_id = request.query_params.get('station_id')
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            interval = request.query_params.get('interval', 'day')
 
-        # Escribir encabezados
-        for col, header in enumerate(data[0].keys()):
-            worksheet.write(0, col, header)
+            if not all([tank_id, station_id, start_date, end_date]):
+                return Response(
+                    {"error": "Faltan parámetros requeridos"},
+                    status=400
+                )
 
-        # Escribir datos
-        for row_idx, row in enumerate(data, start=1):
-            for col_idx, (key, value) in enumerate(row.items()):
-                worksheet.write(row_idx, col_idx, value)
+            # Recopilar datos de todos los procedimientos almacenados
+            report_data = [
+                {
+                    'title': 'Resumen de Consumo',
+                    'data': self.call_stored_procedure(
+                        'sp_consumption_summary',
+                        [tank_id, start_date, end_date]
+                    )
+                },
+                {
+                    'title': 'Historial de Lecturas',
+                    'data': self.call_stored_procedure(
+                        'sp_readings_history',
+                        [tank_id, interval, start_date, end_date]
+                    )
+                },
+                {
+                    'title': 'Alertas del Período',
+                    'data': self.call_stored_procedure(
+                        'sp_period_alerts',
+                        [station_id, start_date, end_date]
+                    )
+                },
+                {
+                    'title': 'Estadísticas de Reposición',
+                    'data': self.call_stored_procedure(
+                        'sp_refill_statistics',
+                        [tank_id, start_date, end_date]
+                    )
+                },
+                {
+                    'title': 'Análisis de Eficiencia',
+                    'data': self.call_stored_procedure(
+                        'sp_efficiency_analysis',
+                        [station_id, start_date, end_date]
+                    )
+                }
+            ]
 
-        workbook.close()
-        output.seek(0)
+            # Generar PDF
+            buffer = self.generate_pdf_report(report_data)
+            buffer.seek(0)
+            
+            # Preparar respuesta
+            response = HttpResponse(content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="reporte_{start_date}_{end_date}.pdf"'
+            response.write(buffer.getvalue())
+            buffer.close()
 
-        response = HttpResponse(output, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        response["Content-Disposition"] = f'attachment; filename="{filename}"'
-        return response
+            return response
 
-class PDFReportViewSet(BaseReportViewSet):
-    """
-    ViewSet para generar reportes en formato PDF.
-    """
-
-    def list(self, request):
-        """
-        Genera un reporte basado en parámetros de consulta.
-        """
-        tanque_id = request.query_params.get("tanque_id")
-        fecha_inicio = request.query_params.get("fecha_inicio")
-        fecha_fin = request.query_params.get("fecha_fin")
-
-        # Llamar al procedimiento almacenado
-        data = self.call_stored_procedure("resumen_consumo_tanque", [tanque_id, fecha_inicio, fecha_fin])
-        return self.generate_pdf(data, filename="reporte_consumo.pdf")
-
-class ExcelReportViewSet(BaseReportViewSet):
-    """
-    ViewSet para generar reportes en formato Excel.
-    """
-
-    def list(self, request):
-        """
-        Genera un reporte basado en parámetros de consulta.
-        """
-        tanque_id = request.query_params.get("tanque_id")
-        intervalo = request.query_params.get("intervalo", "day")
-        fecha_inicio = request.query_params.get("fecha_inicio")
-        fecha_fin = request.query_params.get("fecha_fin")
-
-        # Llamar al procedimiento almacenado
-        data = self.call_stored_procedure("historico_lecturas", [tanque_id, intervalo, fecha_inicio, fecha_fin])
-        return self.generate_excel(data, filename="reporte_historico.xlsx")
-
-class CSVReportViewSet(BaseReportViewSet):
-    """
-    ViewSet para generar reportes en formato CSV.
-    """
-
-    def list(self, request):
-        """
-        Genera un reporte basado en parámetros de consulta.
-        """
-        estacion_id = request.query_params.get("estacion_id")
-
-        # Llamar al procedimiento almacenado
-        data = self.call_stored_procedure("reporte_umbrales", [estacion_id])
-        return self.generate_csv(data, filename="reporte_umbrales.csv")
+        except Exception as e:
+            logger.error(f"Error generando reporte PDF: {str(e)}", exc_info=True)
+            return Response(
+                {"error": "Error generando el reporte"},
+                status=500
+            )
 
 
 # logger = logging.getLogger(__name__)
