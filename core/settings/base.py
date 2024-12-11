@@ -243,6 +243,8 @@ CORS_EXPOSE_HEADERS = [
 
 CSRF_TRUSTED_ORIGINS = [
     "http://45.236.131.238",
+    "http://localhost:3000",
+
 ]
 
 

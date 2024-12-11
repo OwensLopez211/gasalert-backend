@@ -12,25 +12,19 @@
 from rest_framework.viewsets import ViewSet
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.http import HttpResponse
 from django.db import connection
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-from io import BytesIO
 import logging
 
 logger = logging.getLogger(__name__)
 
-class PDFReportViewSet(ViewSet):
+class ReportViewSet(ViewSet):
     """
-    ViewSet para generar reportes PDF completos usando procedimientos almacenados.
+    ViewSet para ejecutar procedimientos almacenados y devolver los datos en formato JSON.
     """
     
     def call_stored_procedure(self, proc_name, params):
         """
-        Llama a un procedimiento almacenado y devuelve los resultados.
+        Llama a un procedimiento almacenado y devuelve los resultados en formato JSON.
         """
         with connection.cursor() as cursor:
             cursor.callproc(proc_name, params)
@@ -40,57 +34,10 @@ class PDFReportViewSet(ViewSet):
                 return [dict(zip(columns, row)) for row in rows]
             return []
 
-    def generate_pdf_report(self, data):
-        """
-        Genera un PDF formateado con los datos proporcionados
-        """
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=letter)
-        elements = []
-        styles = getSampleStyleSheet()
-
-        # Título del reporte
-        elements.append(Paragraph("Reporte de Análisis de Tanques", styles['Title']))
-        elements.append(Paragraph("<br/><br/>", styles['Normal']))
-
-        # Procesar cada sección de datos
-        for section in data:
-            if section['data']:
-                # Título de la sección
-                elements.append(Paragraph(section['title'], styles['Heading1']))
-                
-                # Convertir datos a tabla
-                table_data = [list(section['data'][0].keys())]  # Headers
-                table_data.extend([list(item.values()) for item in section['data']])
-                
-                # Crear y estilizar la tabla
-                table = Table(table_data)
-                table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.blue),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 14),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                    ('FONTSIZE', (0, 1), (-1, -1), 12),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ]))
-                
-                elements.append(table)
-                elements.append(Paragraph("<br/><br/>", styles['Normal']))
-
-        doc.build(elements)
-        return buffer
-
     @action(detail=False, methods=['get'])
     def generate(self, request):
         """
-        Genera un reporte PDF completo con datos de múltiples procedimientos almacenados.
+        Ejecuta los procedimientos almacenados y devuelve los datos en formato JSON.
         """
         try:
             # Obtener parámetros
@@ -107,78 +54,39 @@ class PDFReportViewSet(ViewSet):
                 )
 
             # Recopilar datos de todos los procedimientos almacenados
-            report_data = [
-                {
-                    'title': 'Resumen de Consumo',
-                    'data': self.call_stored_procedure(
-                        'sp_consumption_summary',
-                        [tank_id, start_date, end_date]
-                    )
-                },
-                {
-                    'title': 'Historial de Lecturas',
-                    'data': self.call_stored_procedure(
-                        'sp_readings_history',
-                        [tank_id, interval, start_date, end_date]
-                    )
-                },
-                {
-                    'title': 'Alertas del Período',
-                    'data': self.call_stored_procedure(
-                        'sp_period_alerts',
-                        [station_id, start_date, end_date]
-                    )
-                },
-                {
-                    'title': 'Estadísticas de Reposición',
-                    'data': self.call_stored_procedure(
-                        'sp_refill_statistics',
-                        [tank_id, start_date, end_date]
-                    )
-                },
-                {
-                    'title': 'Análisis de Eficiencia',
-                    'data': self.call_stored_procedure(
-                        'sp_efficiency_analysis',
-                        [station_id, start_date, end_date]
-                    )
-                }
-            ]
+            report_data = {
+                'consumption_summary': self.call_stored_procedure(
+                    'sp_consumption_summary',
+                    [tank_id, start_date, end_date]
+                ),
+                'readings_history': self.call_stored_procedure(
+                    'sp_readings_history',
+                    [tank_id, interval, start_date, end_date]
+                ),
+                'period_alerts': self.call_stored_procedure(
+                    'sp_period_alerts',
+                    [station_id, start_date, end_date]
+                ),
+                'refill_statistics': self.call_stored_procedure(
+                    'sp_refill_statistics',
+                    [tank_id, start_date, end_date]
+                ),
+                'efficiency_analysis': self.call_stored_procedure(
+                    'sp_efficiency_analysis',
+                    [station_id, start_date, end_date]
+                )
+            }
 
-            # Generar PDF
-            buffer = self.generate_pdf_report(report_data)
-            buffer.seek(0)
-            
-            # Preparar respuesta
-            response = HttpResponse(
-                content=buffer.getvalue(),
-                content_type='application/pdf'
-            )
-            response['Content-Disposition'] = f'attachment; filename="reporte_{start_date}_{end_date}.pdf"'
-            response['Accept-Ranges'] = 'bytes'
-            
-            # Añadir cabeceras CORS explícitas
-            response['Access-Control-Allow-Origin'] = '*'  # O tu dominio específico
-            response['Access-Control-Allow-Headers'] = 'Accept, Content-Type, Authorization'
-            response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-            
-            buffer.close()
-            return response
+            # Devolver los datos en formato JSON
+            return Response(report_data)
 
         except Exception as e:
-            logger.error(f"Error generando reporte PDF: {str(e)}", exc_info=True)
+            logger.error(f"Error ejecutando procedimientos almacenados: {str(e)}", exc_info=True)
             return Response(
                 {"error": str(e)},
                 status=500,
                 content_type='application/json'
             )
-
-    def options(self, request, *args, **kwargs):
-        response = HttpResponse()
-        response['Access-Control-Allow-Origin'] = '*'
-        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-        response['Access-Control-Allow-Headers'] = 'Accept, Content-Type, Authorization'
-        return response
 
         
 
