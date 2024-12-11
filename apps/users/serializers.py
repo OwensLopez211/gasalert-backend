@@ -75,3 +75,11 @@ class UserActionLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserActionLog
         fields = ('id', 'usuario', 'descripcion_accion', 'fecha')
+
+from rest_framework import serializers
+from .models import Auditoria
+
+class AuditoriaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Auditoria
+        fields = ['id', 'usuario', 'campo', 'valor_anterior', 'valor_nuevo', 'fecha_modificacion', 'accion']

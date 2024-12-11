@@ -136,3 +136,22 @@ class UserActionLog(models.Model):
 
     def __str__(self):
         return f"{self.usuario} - {self.descripcion_accion} - {self.fecha}"
+    
+class Auditoria(models.Model):
+    # Definir los campos que registrarás en la auditoría
+    usuario = models.ForeignKey(User, on_delete=models.CASCADE, related_name='auditorias')  # Usuario que realizó la acción
+    campo = models.CharField(max_length=100)  # Campo que fue modificado
+    valor_anterior = models.TextField()  # Valor anterior del campo
+    valor_nuevo = models.TextField()  # Nuevo valor del campo
+    fecha_modificacion = models.DateTimeField(auto_now_add=True)  # Fecha de la modificación
+    accion = models.CharField(max_length=50)  # Acción realizada: 'CREATE', 'UPDATE', 'DELETE'
+
+    class Meta:
+        verbose_name = 'Auditoría'
+        verbose_name_plural = 'Auditorías'
+        db_table = 'auditoria'
+        ordering = ['-fecha_modificacion']
+
+    def __str__(self):
+        return f'{self.usuario.email} - {self.accion} {self.campo}'
+
