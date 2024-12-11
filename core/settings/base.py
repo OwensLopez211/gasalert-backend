@@ -236,9 +236,15 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
+CORS_EXPOSE_HEADERS = [
+    'content-disposition',
+    'content-type',
+]
+
 CSRF_TRUSTED_ORIGINS = [
     "http://45.236.131.238",
 ]
+
 
 #IDK
 # Asegurarse de que el directorio logs existe

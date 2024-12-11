@@ -150,20 +150,37 @@ class PDFReportViewSet(ViewSet):
             buffer.seek(0)
             
             # Preparar respuesta
-            response = HttpResponse(content_type='application/pdf')
+            response = HttpResponse(
+                content=buffer.getvalue(),
+                content_type='application/pdf'
+            )
             response['Content-Disposition'] = f'attachment; filename="reporte_{start_date}_{end_date}.pdf"'
-            response.write(buffer.getvalue())
+            response['Accept-Ranges'] = 'bytes'
+            
+            # Añadir cabeceras CORS explícitas
+            response['Access-Control-Allow-Origin'] = '*'  # O tu dominio específico
+            response['Access-Control-Allow-Headers'] = 'Accept, Content-Type, Authorization'
+            response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            
             buffer.close()
-
             return response
 
         except Exception as e:
             logger.error(f"Error generando reporte PDF: {str(e)}", exc_info=True)
             return Response(
-                {"error": "Error generando el reporte"},
-                status=500
+                {"error": str(e)},
+                status=500,
+                content_type='application/json'
             )
 
+    def options(self, request, *args, **kwargs):
+        response = HttpResponse()
+        response['Access-Control-Allow-Origin'] = '*'
+        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'Accept, Content-Type, Authorization'
+        return response
+
+        
 
 # logger = logging.getLogger(__name__)
 
