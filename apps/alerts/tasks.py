@@ -47,7 +47,7 @@ def procesar_lecturas_redis():
         finally:
             redis_client.lpush("lecturas_procesadas", lectura_raw)
             redis_client.lrem("lecturas_brutas", 0, lectura_raw)
-
+@shared_task
 def generar_alertas_y_notificaciones(tank_id, nivel, umbrales):
     """
     Genera alertas y notificaciones tanto para bajadas como subidas de nivel.
@@ -110,7 +110,7 @@ def generar_alertas_y_notificaciones(tank_id, nivel, umbrales):
         print(traceback.format_exc())
         return []
 
-    
+@shared_task
 def guardar_alerta(tank_id, tipo, nivel, valor):
     """
     Crea una nueva alerta en la base de datos.
@@ -150,7 +150,7 @@ def guardar_alerta(tank_id, tipo, nivel, valor):
     except Exception as e:
         print(f"Error al guardar alerta: {e}")
     return None
-
+@shared_task
 def enviar_notificaciones_y_websocket(alertas):
     """
     Envía notificaciones a los usuarios y envía alertas en tiempo real al WebSocket.
